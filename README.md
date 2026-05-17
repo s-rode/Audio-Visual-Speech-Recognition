@@ -1,6 +1,6 @@
 # Team 1
 
-
+Test for rights
 
 ## Getting started
 
