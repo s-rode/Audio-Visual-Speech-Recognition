@@ -7,12 +7,14 @@ This repository contains a minimal, modular ASR experiment scaffold for week 1:
 - manifest-driven experiment runs
 - optional noise injection before transcription
 - WER and CER evaluation against references
+- Hugging Face TED-LIUM export tooling for a first real benchmark
 
 ## Project layout
 
 ```text
 configs/
   noop_smoke.toml
+  tedlium_dev_whisper.toml
   whisper_baseline.toml
 data/
   example_manifest.csv
@@ -24,6 +26,7 @@ src/team1_asr/
   manifest.py
   noise.py
   pipeline.py
+  prepare_tedlium.py
   types.py
 ```
 
@@ -69,6 +72,18 @@ Run the actual Whisper baseline:
 uv run team1-asr configs/whisper_baseline.toml
 ```
 
+Prepare a TED-LIUM subset from Hugging Face:
+
+```bash
+uv run team1-prepare-tedlium data/tedlium/dev --release release3 --split validation --limit 500 --save-dataset --force
+```
+
+Run Whisper on that TED-LIUM export:
+
+```bash
+uv run team1-asr configs/tedlium_dev_whisper.toml
+```
+
 Outputs are written to the configured output directory as:
 
 - `transcripts.jsonl`: one JSON record per utterance
@@ -77,10 +92,10 @@ Outputs are written to the configured output directory as:
 ## Recommended next steps
 
 1. Replace `data/example_manifest.csv` with a real dataset manifest.
-2. Add a small clean-audio baseline set and verify WER first.
-3. Run the same manifest with noise enabled at several SNR levels.
+2. Start with TED-LIUM validation as the first real benchmark.
+3. Verify clean-audio WER first, then run noise sweeps.
 4. Add more backends or models behind the same interface.
-5. Add experiment tracking once the core loop is stable.
+5. Add the visual correction stage later on top of the audio baseline.
 
 ## Noise configuration
 
@@ -107,3 +122,16 @@ The scaffold is intentionally centered on a thin local pipeline rather than a th
 - noise type
 - evaluation metrics
 - logging and output format
+
+## TED-LIUM Workflow
+
+The recommended first real benchmark is Hugging Face's `LIUM/tedlium`, then a frozen local export for experiments.
+
+The `team1-prepare-tedlium` command:
+
+- loads a TED-LIUM split from Hugging Face Datasets
+- optionally samples a reproducible subset with `--limit` and `--seed`
+- writes one local `.wav` file per utterance plus a `manifest.csv`
+- can also save the selected HF dataset subset to `hf_dataset/`
+
+That keeps the ingestion path HF-native while leaving the ASR experiment loop stable and file-based.

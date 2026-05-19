@@ -1,0 +1,6 @@
+prune .uv-cache
+prune .venv
+prune outputs
+prune data
+global-exclude __pycache__
+global-exclude *.py[cod]
