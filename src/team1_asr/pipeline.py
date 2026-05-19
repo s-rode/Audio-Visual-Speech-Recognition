@@ -1,0 +1,88 @@
+from __future__ import annotations
+
+from dataclasses import asdict
+import json
+
+from team1_asr.backends.base import TranscriptionRequest
+from team1_asr.backends.factory import create_backend
+from team1_asr.config import ExperimentConfig
+from team1_asr.evaluation import compute_metrics
+from team1_asr.manifest import load_manifest
+from team1_asr.noise import maybe_apply_noise
+from team1_asr.types import Transcript
+
+
+def run_experiment(config: ExperimentConfig) -> dict[str, object]:
+    rows = load_manifest(config.input)
+    output_dir = config.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    backend = create_backend(config.backend)
+    transcript_path = output_dir / config.output.transcript_name
+
+    references: list[str] = []
+    predictions: list[str] = []
+    with transcript_path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            prepared_audio_path = maybe_apply_noise(row.audio_path, config.noise, output_dir)
+            transcript = backend.transcribe(
+                TranscriptionRequest(
+                    audio_path=prepared_audio_path,
+                    language=row.language,
+                )
+            )
+            handle.write(
+                json.dumps(
+                    _serialize_transcript(
+                        row.utterance_id,
+                        row.audio_path,
+                        row.reference,
+                        prepared_audio_path,
+                        transcript,
+                    ),
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+
+            if row.reference is not None:
+                references.append(row.reference)
+                predictions.append(transcript.text)
+
+    metrics = compute_metrics(references, predictions)
+    summary = {
+        "experiment_name": config.experiment_name,
+        "num_utterances": len(rows),
+        "backend": config.backend.kind,
+        "model": config.backend.model,
+        "noise_enabled": config.noise.enabled,
+        "noise_kind": config.noise.kind if config.noise.enabled else None,
+        "snr_db": config.noise.snr_db if config.noise.enabled else None,
+        "utterances_scored": metrics.utterances_scored,
+        "wer": metrics.wer,
+        "cer": metrics.cer,
+        "transcript_path": str(transcript_path),
+    }
+    metrics_path = output_dir / config.output.metrics_name
+    metrics_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
+
+
+def _serialize_transcript(
+    utterance_id: str,
+    clean_audio_path: str,
+    reference: str | None,
+    used_audio_path: str,
+    transcript: Transcript,
+) -> dict[str, object]:
+    return {
+        "utterance_id": utterance_id,
+        "clean_audio_path": clean_audio_path,
+        "used_audio_path": used_audio_path,
+        "reference": reference,
+        "prediction": transcript.text,
+        "language": transcript.language,
+        "duration": transcript.duration,
+        "segments": [asdict(segment) for segment in transcript.segments],
+        "metadata": transcript.metadata,
+    }

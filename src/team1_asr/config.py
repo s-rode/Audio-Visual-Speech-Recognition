@@ -1,0 +1,123 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+
+@dataclass
+class BackendConfig:
+    kind: str = "faster-whisper"
+    model: str = "small.en"
+    device: str = "auto"
+    compute_type: str = "default"
+    beam_size: int = 5
+    best_of: int = 5
+    batch_size: int = 1
+    language: str | None = "en"
+    task: str = "transcribe"
+    word_timestamps: bool = True
+    vad_filter: bool = True
+    condition_on_previous_text: bool = True
+
+
+@dataclass
+class NoiseConfig:
+    enabled: bool = False
+    kind: str = "white"
+    snr_db: float = 20.0
+    noise_path: str | None = None
+    seed: int = 0
+
+
+@dataclass
+class InputConfig:
+    manifest_path: str = "data/manifest.csv"
+    audio_column: str = "audio_path"
+    reference_column: str = "reference"
+    id_column: str = "utterance_id"
+    language_column: str = "language"
+
+
+@dataclass
+class OutputConfig:
+    output_dir: str = "outputs/latest"
+    transcript_name: str = "transcripts.jsonl"
+    metrics_name: str = "metrics.json"
+
+
+@dataclass
+class ExperimentConfig:
+    experiment_name: str = "whisper-baseline"
+    backend: BackendConfig = field(default_factory=BackendConfig)
+    noise: NoiseConfig = field(default_factory=NoiseConfig)
+    input: InputConfig = field(default_factory=InputConfig)
+    output: OutputConfig = field(default_factory=OutputConfig)
+
+    @property
+    def output_dir(self) -> Path:
+        return Path(self.output.output_dir)
+
+
+def load_config(path: str | Path) -> ExperimentConfig:
+    raw = _load_toml(path)
+    return ExperimentConfig(
+        experiment_name=raw.get("experiment_name", "whisper-baseline"),
+        backend=_load_dataclass(BackendConfig, raw.get("backend", {})),
+        noise=_load_dataclass(NoiseConfig, raw.get("noise", {})),
+        input=_load_dataclass(InputConfig, raw.get("input", {})),
+        output=_load_dataclass(OutputConfig, raw.get("output", {})),
+    )
+
+
+def _load_dataclass(cls: type[Any], data: dict[str, Any]) -> Any:
+    allowed = {field.name for field in cls.__dataclass_fields__.values()}
+    filtered = {key: value for key, value in data.items() if key in allowed}
+    return cls(**filtered)
+
+
+def _load_toml(path: str | Path) -> dict[str, Any]:
+    try:
+        import tomllib
+
+        with Path(path).open("rb") as handle:
+            return tomllib.load(handle)
+    except ImportError:
+        return _load_simple_toml(path)
+
+
+def _load_simple_toml(path: str | Path) -> dict[str, Any]:
+    root: dict[str, Any] = {}
+    current = root
+
+    for raw_line in Path(path).read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section_name = line[1:-1].strip()
+            current = root.setdefault(section_name, {})
+            continue
+
+        key, sep, value = line.partition("=")
+        if not sep:
+            raise ValueError(f"Invalid config line: {raw_line}")
+        current[key.strip()] = _parse_simple_value(value.strip())
+
+    return root
+
+
+def _parse_simple_value(value: str) -> Any:
+    if value.startswith('"') and value.endswith('"'):
+        return value[1:-1]
+    if value in {"true", "false"}:
+        return value == "true"
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    return value
