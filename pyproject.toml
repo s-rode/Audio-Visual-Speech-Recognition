@@ -9,6 +9,7 @@ description = "Modular ASR experiment pipeline for Whisper-based robustness stud
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
+  "datasets>=4.0.0",
   "faster-whisper>=1.1.0",
   "jiwer>=3.0.0",
   "numpy>=1.26.0",
@@ -20,7 +21,7 @@ dev = []
 
 [project.scripts]
 team1-asr = "team1_asr.cli:main"
-team1-prepare-tedlium = "team1_asr.prepare_tedlium:main"
+team1-prepare-librispeech = "team1_asr.prepare_librispeech:main"
 
 [tool.uv]
 cache-dir = ".uv-cache"

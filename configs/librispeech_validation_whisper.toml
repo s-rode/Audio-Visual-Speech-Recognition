@@ -1,4 +1,4 @@
-experiment_name = "tedlium-dev-whisper-small-en"
+experiment_name = "librispeech-validation-clean-whisper-small-en"
 
 [backend]
 kind = "faster-whisper"
@@ -20,13 +20,13 @@ snr_db = 20.0
 seed = 0
 
 [input]
-manifest_path = "data/tedlium/dev/manifest.csv"
+manifest_path = "data/librispeech/validation/manifest.csv"
 audio_column = "audio_path"
 reference_column = "reference"
 id_column = "utterance_id"
 language_column = "language"
 
 [output]
-output_dir = "outputs/tedlium_dev_whisper"
+output_dir = "outputs/librispeech_validation_whisper"
 transcript_name = "transcripts.jsonl"
 metrics_name = "metrics.json"
