@@ -7,7 +7,7 @@ This repository contains a minimal, modular ASR experiment scaffold for week 1:
 - manifest-driven experiment runs
 - optional noise injection before transcription
 - WER and CER evaluation against references
-- Hugging Face TED-LIUM export tooling for a first real benchmark
+- TED-LIUM export tooling for a first real benchmark
 
 ## Project layout
 
@@ -72,10 +72,10 @@ Run the actual Whisper baseline:
 uv run team1-asr configs/whisper_baseline.toml
 ```
 
-Prepare a TED-LIUM subset from Hugging Face:
+Prepare a TED-LIUM subset from a local archive:
 
 ```bash
-uv run team1-prepare-tedlium data/tedlium/dev --release release3 --split validation --limit 500 --save-dataset --force
+uv run team1-prepare-tedlium data/tedlium/dev --archive /path/to/dev.tar.gz --split validation --limit 500 --save-dataset --force
 ```
 
 Run Whisper on that TED-LIUM export:
@@ -125,13 +125,14 @@ The scaffold is intentionally centered on a thin local pipeline rather than a th
 
 ## TED-LIUM Workflow
 
-The recommended first real benchmark is Hugging Face's `LIUM/tedlium`, then a frozen local export for experiments.
+The recommended first real benchmark is TED-LIUM, then a frozen local export for experiments.
 
 The `team1-prepare-tedlium` command:
 
-- loads a TED-LIUM split from Hugging Face Datasets
+- accepts either a local TED-LIUM archive or downloads a full release from OpenSLR
 - optionally samples a reproducible subset with `--limit` and `--seed`
 - writes one local `.wav` file per utterance plus a `manifest.csv`
-- can also save the selected HF dataset subset to `hf_dataset/`
+- can also save metadata about the source archive
 
-That keeps the ingestion path HF-native while leaving the ASR experiment loop stable and file-based.
+For laptop-friendly evaluation, prefer a small split archive such as `dev.tar.gz` or `test.tar.gz`
+instead of the full TED-LIUM release archive.

@@ -9,7 +9,6 @@ description = "Modular ASR experiment pipeline for Whisper-based robustness stud
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-  "datasets>=2.20.0",
   "faster-whisper>=1.1.0",
   "jiwer>=3.0.0",
   "numpy>=1.26.0",
