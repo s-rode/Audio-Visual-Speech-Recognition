@@ -101,7 +101,7 @@ while loading the backend and transcribing utterances.
 Outputs are written to the configured output directory as:
 
 - `transcripts.jsonl`: one JSON record per utterance
-- `metrics.json`: experiment summary and aggregate metrics
+- `metrics.json`: experiment summary plus normalized `wer`/`cer` and raw `raw_wer`/`raw_cer`
 
 ## Recommended next steps
 

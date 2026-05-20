@@ -81,6 +81,8 @@ def run_experiment(
         "utterances_scored": metrics.utterances_scored,
         "wer": metrics.wer,
         "cer": metrics.cer,
+        "raw_wer": metrics.raw_wer,
+        "raw_cer": metrics.raw_cer,
         "transcript_path": str(transcript_path),
     }
     metrics_path = output_dir / config.output.metrics_name
