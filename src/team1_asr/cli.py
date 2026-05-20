@@ -18,7 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     config = load_config(args.config)
-    summary = run_experiment(config)
+    summary = run_experiment(config, progress=True)
     print(json.dumps(summary, indent=2))
 
 

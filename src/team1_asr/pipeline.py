@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import json
+import sys
+from typing import TextIO
 
 from team1_asr.backends.base import TranscriptionRequest
 from team1_asr.backends.factory import create_backend
@@ -12,18 +14,36 @@ from team1_asr.noise import maybe_apply_noise
 from team1_asr.types import Transcript
 
 
-def run_experiment(config: ExperimentConfig) -> dict[str, object]:
+def run_experiment(
+    config: ExperimentConfig,
+    progress: bool = False,
+    progress_stream: TextIO | None = None,
+) -> dict[str, object]:
+    progress_handle = progress_stream or sys.stderr
+    _show_progress(progress, progress_handle, f"Loading manifest: {config.input.manifest_path}")
     rows = load_manifest(config.input)
+    _show_progress(progress, progress_handle, f"Loaded {len(rows)} utterance(s)")
     output_dir = config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    _show_progress(
+        progress,
+        progress_handle,
+        f"Loading backend '{config.backend.kind}' with model '{config.backend.model}'",
+    )
     backend = create_backend(config.backend)
+    _show_progress(progress, progress_handle, "Backend ready")
     transcript_path = output_dir / config.output.transcript_name
 
     references: list[str] = []
     predictions: list[str] = []
     with transcript_path.open("w", encoding="utf-8") as handle:
-        for row in rows:
+        for index, row in enumerate(rows, start=1):
+            _show_progress(
+                progress,
+                progress_handle,
+                f"Transcribing {index}/{len(rows)}: {row.utterance_id}",
+            )
             prepared_audio_path = maybe_apply_noise(row.audio_path, config.noise, output_dir)
             transcript = backend.transcribe(
                 TranscriptionRequest(
@@ -65,7 +85,14 @@ def run_experiment(config: ExperimentConfig) -> dict[str, object]:
     }
     metrics_path = output_dir / config.output.metrics_name
     metrics_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    _show_progress(progress, progress_handle, f"Wrote transcripts: {transcript_path}")
+    _show_progress(progress, progress_handle, f"Wrote metrics: {metrics_path}")
     return summary
+
+
+def _show_progress(enabled: bool, stream: TextIO, message: str) -> None:
+    if enabled:
+        print(message, file=stream, flush=True)
 
 
 def _serialize_transcript(

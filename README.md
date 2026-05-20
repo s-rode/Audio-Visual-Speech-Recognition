@@ -13,6 +13,7 @@ This repository contains a minimal, modular ASR experiment scaffold:
 
 ```text
 configs/
+  librispeech_demo_tiny.toml
   librispeech_validation_whisper.toml
   noop_smoke.toml
   whisper_baseline.toml
@@ -75,7 +76,7 @@ uv run team1-asr configs/whisper_baseline.toml
 Prepare a LibriSpeech subset from Hugging Face:
 
 ```bash
-uv run team1-prepare-librispeech data/librispeech/validation --config clean --split validation.clean --limit 500 --save-dataset --force
+uv run team1-prepare-librispeech data/librispeech/validation --config clean --split validation --limit 500 --force
 ```
 
 Run Whisper on that LibriSpeech export:
@@ -83,6 +84,19 @@ Run Whisper on that LibriSpeech export:
 ```bash
 uv run team1-asr configs/librispeech_validation_whisper.toml
 ```
+
+For a quick one-utterance demo with a smaller model:
+
+```bash
+uv run team1-prepare-librispeech data/librispeech/validation --config clean --split validation --limit 1 --force
+uv run team1-download-model tiny.en
+uv run team1-asr configs/librispeech_demo_tiny.toml
+uv run team1-show-transcripts outputs/librispeech_demo_tiny/transcripts.jsonl --limit 1
+```
+
+`team1-download-model` shows Hugging Face download progress and caches the model
+before `team1-asr` loads it. The experiment runner also prints progress messages
+while loading the backend and transcribing utterances.
 
 Outputs are written to the configured output directory as:
 
@@ -92,7 +106,7 @@ Outputs are written to the configured output directory as:
 ## Recommended next steps
 
 1. Replace `data/example_manifest.csv` with a real dataset manifest.
-2. Start with LibriSpeech `validation.clean` as the first real benchmark.
+2. Start with LibriSpeech `--config clean --split validation` as the first real benchmark.
 3. Verify clean-audio WER first, then run noise sweeps.
 4. Add more backends or models behind the same interface.
 5. Add the visual correction stage later on top of the audio baseline.
@@ -130,8 +144,9 @@ The recommended first real benchmark is Hugging Face `openslr/librispeech_asr`, 
 The `team1-prepare-librispeech` command:
 
 - loads a LibriSpeech split directly from Hugging Face
-- optionally samples a reproducible subset with `--limit` and `--seed`
+- exports the first `--limit` utterances in streaming mode for quick local tests
 - writes one local `.wav` file per utterance plus a `manifest.csv`
-- can also save the selected Hugging Face subset with `save_to_disk()`
+- can also save a Hugging Face subset with `--save-dataset`, which may require downloading the full split before applying `--limit`
 
-For laptop-friendly evaluation, start with `validation.clean` or `test.clean`, then move to `train.clean.100` only if needed.
+For laptop-friendly evaluation, start with `--config clean --split validation` or
+`--config clean --split test`, then move to `train.100` only if needed.

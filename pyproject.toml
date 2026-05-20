@@ -21,7 +21,9 @@ dev = []
 
 [project.scripts]
 team1-asr = "team1_asr.cli:main"
+team1-download-model = "team1_asr.download_model:main"
 team1-prepare-librispeech = "team1_asr.prepare_librispeech:main"
+team1-show-transcripts = "team1_asr.show_transcripts:main"
 
 [tool.uv]
 cache-dir = ".uv-cache"

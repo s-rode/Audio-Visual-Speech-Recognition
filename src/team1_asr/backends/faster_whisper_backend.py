@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from team1_asr.backends.base import (
     ASRBackend,
     TranscriptionRequest,
@@ -12,6 +14,7 @@ from team1_asr.types import Segment, Transcript, WordSegment
 class FasterWhisperBackend(ASRBackend):
     def __init__(self, config: BackendConfig) -> None:
         self._config = config
+        os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
         try:
             from faster_whisper import WhisperModel
         except ImportError as exc:
