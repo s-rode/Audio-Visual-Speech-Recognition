@@ -13,6 +13,11 @@ This repository contains a minimal, modular ASR experiment scaffold:
 
 ```text
 configs/
+  lrs3_hf_tiny.toml
+  lrs3_hf_tiny_clean.toml
+  lrs3_hf_tiny_white_20db.toml
+  lrs3_hf_tiny_white_10db.toml
+  lrs3_hf_tiny_white_0db.toml
   librispeech_demo_tiny.toml
   librispeech_validation_whisper.toml
   noop_smoke.toml
@@ -27,6 +32,7 @@ src/team1_asr/
   manifest.py
   noise.py
   pipeline.py
+  prepare_lrs3_hf.py
   prepare_librispeech.py
   types.py
 ```
@@ -150,3 +156,30 @@ The `team1-prepare-librispeech` command:
 
 For laptop-friendly evaluation, start with `--config clean --split validation` or
 `--config clean --split test`, then move to `train.100` only if needed.
+
+## LRS3 Hugging Face Workflow
+
+For audio-only ASR experiments on LRS3, the project can stream the third-party
+Hugging Face mirror `Ainncy/LRS3` without storing the full dataset locally. The
+command downloads one MP4 clip at a time, extracts mono 16 kHz WAV audio with
+`ffmpeg`, writes `manifest.csv`, and deletes the temporary MP4.
+
+```bash
+uv run team1-prepare-lrs3-hf data/lrs3/hf_train_100 --limit 100 --force
+uv run team1-download-model tiny.en
+uv run team1-asr configs/lrs3_hf_tiny.toml
+uv run team1-show-transcripts outputs/lrs3_hf_tiny/transcripts.jsonl --limit 5
+```
+
+Noise variants reuse the same exported audio manifest:
+
+```bash
+uv run team1-asr configs/lrs3_hf_tiny_clean.toml
+uv run team1-asr configs/lrs3_hf_tiny_white_20db.toml
+uv run team1-asr configs/lrs3_hf_tiny_white_10db.toml
+uv run team1-asr configs/lrs3_hf_tiny_white_0db.toml
+```
+
+The Hugging Face mirror currently exposes one `train` split. Treat these runs as
+exploratory ASR/noise experiments rather than an official LRS3 test benchmark
+unless the official test split provenance is confirmed.
