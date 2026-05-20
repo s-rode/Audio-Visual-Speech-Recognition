@@ -18,6 +18,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = []
+tracking = [
+  "wandb>=0.17.0",
+]
 
 [project.scripts]
 team1-asr = "team1_asr.cli:main"

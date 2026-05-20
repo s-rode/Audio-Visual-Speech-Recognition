@@ -11,6 +11,7 @@ from team1_asr.config import ExperimentConfig
 from team1_asr.evaluation import compute_metrics
 from team1_asr.manifest import load_manifest
 from team1_asr.noise import maybe_apply_noise
+from team1_asr.tracking import WandbTracker
 from team1_asr.types import Transcript
 
 
@@ -20,6 +21,21 @@ def run_experiment(
     progress_stream: TextIO | None = None,
 ) -> dict[str, object]:
     progress_handle = progress_stream or sys.stderr
+    tracker = WandbTracker(config)
+    tracker.start()
+    try:
+        summary = _run_experiment(config, progress, progress_handle)
+        tracker.log_summary(summary, config.output_dir)
+        return summary
+    finally:
+        tracker.finish()
+
+
+def _run_experiment(
+    config: ExperimentConfig,
+    progress: bool,
+    progress_handle: TextIO,
+) -> dict[str, object]:
     _show_progress(progress, progress_handle, f"Loading manifest: {config.input.manifest_path}")
     rows = load_manifest(config.input)
     _show_progress(progress, progress_handle, f"Loaded {len(rows)} utterance(s)")

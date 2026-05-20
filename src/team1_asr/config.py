@@ -47,12 +47,26 @@ class OutputConfig:
 
 
 @dataclass
+class WandbConfig:
+    enabled: bool = False
+    project: str = "team1-asr"
+    entity: str | None = None
+    run_name: str | None = None
+    group: str | None = None
+    mode: str | None = None
+    log_artifacts: bool = False
+    log_transcripts: bool = True
+    transcript_table_limit: int = 100
+
+
+@dataclass
 class ExperimentConfig:
     experiment_name: str = "whisper-baseline"
     backend: BackendConfig = field(default_factory=BackendConfig)
     noise: NoiseConfig = field(default_factory=NoiseConfig)
     input: InputConfig = field(default_factory=InputConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    wandb: WandbConfig = field(default_factory=WandbConfig)
 
     @property
     def output_dir(self) -> Path:
@@ -67,6 +81,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
         noise=_load_dataclass(NoiseConfig, raw.get("noise", {})),
         input=_load_dataclass(InputConfig, raw.get("input", {})),
         output=_load_dataclass(OutputConfig, raw.get("output", {})),
+        wandb=_load_dataclass(WandbConfig, raw.get("wandb", {})),
     )
 
 

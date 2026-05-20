@@ -6,5 +6,6 @@ __pycache__/
 build/
 .DS_Store
 outputs/
+wandb/
 data/librispeech/
 data/lrs3/

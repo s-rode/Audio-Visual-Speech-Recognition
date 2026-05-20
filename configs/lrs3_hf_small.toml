@@ -16,7 +16,7 @@ condition_on_previous_text = false
 [noise]
 enabled = true
 kind = "white"
-snr_db = 20.0
+snr_db = 50.0
 seed = 0
 
 [input]
@@ -30,3 +30,11 @@ language_column = "language"
 output_dir = "outputs/lrs3_hf_small"
 transcript_name = "transcripts.jsonl"
 metrics_name = "metrics.json"
+
+[wandb]
+enabled = true
+project = "team1-asr"
+run_name = "lrs3-small-50db"
+mode = "online"
+log_transcripts = true
+log_artifacts = false

@@ -45,6 +45,12 @@ Create the virtual environment and install the project with `uv`:
 uv sync
 ```
 
+To enable Weights & Biases logging, install the optional tracking dependencies:
+
+```bash
+uv sync --extra tracking
+```
+
 You also need `ffmpeg` available on the system for Whisper audio decoding.
 
 This project pins `uv`'s cache to a local `.uv-cache/` directory so `uv run` and `uv sync`
@@ -108,6 +114,26 @@ Outputs are written to the configured output directory as:
 
 - `transcripts.jsonl`: one JSON record per utterance
 - `metrics.json`: experiment summary plus normalized `wer`/`cer` and raw `raw_wer`/`raw_cer`
+
+## Weights & Biases Tracking
+
+Experiment configs can opt into W&B logging with a `[wandb]` section:
+
+```toml
+[wandb]
+enabled = true
+project = "team1-asr"
+run_name = "lrs3-tiny-white-10db"
+mode = "offline"
+log_artifacts = true
+log_transcripts = true
+transcript_table_limit = 100
+```
+
+When enabled, `team1-asr` logs numeric metrics and a transcript table. Set
+`log_artifacts = true` when you also want the run output directory uploaded as a
+W&B artifact. Use `mode = "offline"` for laptop runs that should not upload
+immediately; remove it or set `mode = "online"` when you want to sync to W&B.
 
 ## Recommended next steps
 
