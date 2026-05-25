@@ -10,7 +10,7 @@ from team1_asr.backends.factory import create_backend
 from team1_asr.config import ExperimentConfig
 from team1_asr.evaluation import compute_metrics
 from team1_asr.manifest import load_manifest
-from team1_asr.noise import maybe_apply_noise
+from team1_asr.noise import apply_demand_noise
 from team1_asr.tracking import WandbTracker
 from team1_asr.types import Transcript
 
@@ -42,6 +42,16 @@ def _run_experiment(
     output_dir = config.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Clear noisy_audio folder to avoid cluttering
+    try:
+        import shutil
+        noisy_audio_dir = output_dir / "noisy_audio"
+        if noisy_audio_dir.exists():
+            _show_progress(progress, progress_handle, "Clearing old noisy audio artifacts...")
+            shutil.rmtree(noisy_audio_dir)
+    except:
+        print("Failed to clear noisy_audio folder.")
+        
     _show_progress(
         progress,
         progress_handle,
@@ -60,7 +70,7 @@ def _run_experiment(
                 progress_handle,
                 f"Transcribing {index}/{len(rows)}: {row.utterance_id}",
             )
-            prepared_audio_path = maybe_apply_noise(row.audio_path, config.noise, output_dir)
+            prepared_audio_path = apply_demand_noise(row.audio_path, config.noise, output_dir)
             transcript = backend.transcribe(
                 TranscriptionRequest(
                     audio_path=prepared_audio_path,

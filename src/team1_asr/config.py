@@ -24,10 +24,9 @@ class BackendConfig:
 @dataclass
 class NoiseConfig:
     enabled: bool = False
-    kind: str = "white"
-    snr_db: float = 20.0
-    noise_path: str | None = None
-    seed: int = 0
+    snr_db: float = 0.0
+    kind: str = ""
+    demand_dir: str = ""
 
 
 @dataclass

@@ -14,9 +14,10 @@ vad_filter = true
 condition_on_previous_text = true
 
 [noise]
-enabled = false
-kind = "white"
-snr_db = 20.0
+enabled = true
+snr_db = -5
+kind = "blabber"
+demand_dir = "data/DEMAND/16k"
 seed = 0
 
 [input]
