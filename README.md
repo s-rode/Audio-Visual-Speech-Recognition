@@ -56,6 +56,49 @@ You also need `ffmpeg` available on the system for Whisper audio decoding.
 This project pins `uv`'s cache to a local `.uv-cache/` directory so `uv run` and `uv sync`
 do not depend on the machine's global cache configuration.
 
+Additionally, you need to install the DEMAND dataset for background noise inside of the data/ folder, according to the following structure:
+
+```text
+data/.
+|____DEMAND
+| |____48k
+| | |____NRIVER
+| | |____PRESTO
+| | |____NPARK
+| | |____SCAFE
+| | |____OMEETING
+| | |____NFIELD
+| | |____OOFFICE
+| | |____PCAFETER
+| | |____DWASHING
+| | |____TMETRO
+| | |____TCAR
+| | |____DLIVING
+| | |____PSTATION
+| | |____STRAFFIC
+| | |____SPSQUARE
+| | |____DKITCHEN
+| | |____TBUS
+| | |____OHALLWAY
+| |____16k
+| | |____NRIVER
+| | |____PRESTO
+| | |____NPARK
+| | |____OMEETING
+| | |____NFIELD
+| | |____OOFFICE
+| | |____PCAFETER
+| | |____DWASHING
+| | |____TMETRO
+| | |____TCAR
+| | |____DLIVING
+| | |____PSTATION
+| | |____STRAFFIC
+| | |____SPSQUARE
+| | |____DKITCHEN
+| | |____TBUS
+| | |____OHALLWAY
+```
 ## Manifest format
 
 The pipeline expects a CSV manifest. The default columns are:
