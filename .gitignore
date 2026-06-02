@@ -1,4 +1,9 @@
 .venv/
+.uv/
+data/
+noisy_audio/
+*.wav
+*.mp4
 .uv-cache/
 __pycache__/
 *.pyc

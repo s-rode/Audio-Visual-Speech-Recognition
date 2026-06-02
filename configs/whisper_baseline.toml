@@ -14,10 +14,26 @@ vad_filter = true
 condition_on_previous_text = true
 
 [noise]
-enabled = false
-kind = "white"
-snr_db = 20.0
 seed = 0
+
+[noise.demand]
+enabled = true
+snr_db = -5
+noise_path = "data/DEMAND/16k"
+
+[noise.reverb]
+enabled = true
+length_range = [5.0, 15.0]
+width_range = [5.0, 15.0]
+height_range = [2.0, 6.0]
+rt60_range = [0.4, 1.0]
+
+[noise.bandwidth]
+enabled = true
+available_filters = ["butter", "bessel", "cheby1"]
+available_cutoffs_hz = [2000, 4000, 8000]
+filter_order = 5
+
 
 [input]
 manifest_path = "data/manifest.csv"

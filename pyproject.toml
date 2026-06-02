@@ -13,6 +13,8 @@ dependencies = [
   "faster-whisper>=1.1.0",
   "jiwer>=3.0.0",
   "numpy>=1.26.0",
+  "pyacoustics>=2.0.0",
+  "pyroomacoustics>=0.10.1",
   "soundfile>=0.12.1",
 ]
 

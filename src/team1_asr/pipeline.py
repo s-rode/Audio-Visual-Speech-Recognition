@@ -10,10 +10,9 @@ from team1_asr.backends.factory import create_backend
 from team1_asr.config import ExperimentConfig
 from team1_asr.evaluation import compute_metrics
 from team1_asr.manifest import load_manifest
-from team1_asr.noise import apply_demand_noise
+from team1_asr.noise import apply_noise
 from team1_asr.tracking import WandbTracker
 from team1_asr.types import Transcript
-
 
 def run_experiment(
     config: ExperimentConfig,
@@ -70,7 +69,7 @@ def _run_experiment(
                 progress_handle,
                 f"Transcribing {index}/{len(rows)}: {row.utterance_id}",
             )
-            prepared_audio_path = apply_demand_noise(row.audio_path, config.noise, output_dir)
+            prepared_audio_path = apply_noise(row.audio_path, config.noise, output_dir)
             transcript = backend.transcribe(
                 TranscriptionRequest(
                     audio_path=prepared_audio_path,
@@ -101,9 +100,9 @@ def _run_experiment(
         "num_utterances": len(rows),
         "backend": config.backend.kind,
         "model": config.backend.model,
-        "noise_enabled": config.noise.enabled,
-        "noise_kind": config.noise.kind if config.noise.enabled else None,
-        "snr_db": config.noise.snr_db if config.noise.enabled else None,
+        "demand_noise_enabled": config.noise.demand.enabled,
+        "demand_snr_db": config.noise.demand.snr_db if config.noise.demand.enabled else None,
+        "reverberation_enabled": config.noise.reverb.enabled,
         "utterances_scored": metrics.utterances_scored,
         "wer": metrics.wer,
         "cer": metrics.cer,

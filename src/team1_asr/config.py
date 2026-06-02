@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
+import numpy as np
 
 @dataclass
 class BackendConfig:
@@ -20,14 +20,46 @@ class BackendConfig:
     vad_filter: bool = True
     condition_on_previous_text: bool = True
 
+@dataclass
+class DemandNoiseConfig:
+    enabled: bool = False
+    snr_db: float = 0.0
+    noise_path: str = ""
+
+@dataclass
+class ReverbNoiseConfig:
+    enabled: bool = False
+    length_range: list[float] = field(default_factory=lambda: [5.0, 15.0])
+    width_range: list[float] = field(default_factory=lambda: [5.0, 15.0])
+    height_range: list[float] = field(default_factory=lambda: [2.0, 6.0])
+    rt60_range: list[float] = field(default_factory=lambda: [0.4, 1.0])
+
+@dataclass
+class BandwidthNoiseConfig:
+    enabled: bool = False
+    available_filters: list[str] = field(default_factory=lambda: ["butter", "bessel", "cheby1"])
+    available_cutoffs_hz: list[int] = field(default_factory=lambda: [2000, 4000, 8000])
+    filter_order: int = 5
 
 @dataclass
 class NoiseConfig:
-    enabled: bool = False
-    snr_db: float = 0.0
-    kind: str = ""
-    demand_dir: str = ""
+    demand: DemandNoiseConfig = field(default_factory=DemandNoiseConfig)
+    reverb: ReverbNoiseConfig = field(default_factory=ReverbNoiseConfig)
+    bandwidth: BandwidthNoiseConfig = field(default_factory=BandwidthNoiseConfig)
 
+    # rng for noise randomization
+    _rng: np.random.Generator | None = None
+    seed: int | None = None
+
+    def __post_init__(self):
+        if isinstance(self.demand, dict):
+            self.demand = DemandNoiseConfig(**self.demand)
+        if isinstance(self.reverb, dict):
+            self.reverb = ReverbNoiseConfig(**self.reverb)
+        if isinstance(self.bandwidth, dict):
+            self.bandwidth = BandwidthNoiseConfig(**self.bandwidth)
+        
+        self._rng = np.random.default_rng(self.seed)
 
 @dataclass
 class InputConfig:
