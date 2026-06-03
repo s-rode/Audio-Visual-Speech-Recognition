@@ -30,3 +30,10 @@ language_column = "language"
 output_dir = "outputs/lrs3_hf_tiny"
 transcript_name = "transcripts.jsonl"
 metrics_name = "metrics.json"
+
+[wandb]
+enabled = true
+project = "team1-asr"
+run_name = "lrs3-tiny-baseline"
+mode = "online"
+log_transcripts = true
