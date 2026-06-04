@@ -3,16 +3,24 @@
 This repository contains a minimal, modular ASR experiment scaffold:
 
 - Whisper-based batch transcription via `faster-whisper`
-- a swappable backend interface so other ASR models can be added later
+- Parakeet v3 CoreML transcription through a small Swift bridge
+- a swappable backend interface for comparing ASR models
 - manifest-driven experiment runs
-- optional noise injection before transcription
+- optional white-noise and DEMAND/reverb/bandwidth noise injection
 - WER and CER evaluation against references
-- Hugging Face LibriSpeech export tooling for a first real benchmark
+- Hugging Face export tooling for LibriSpeech and LRS3 audio subsets
 
 ## Project layout
 
 ```text
 configs/
+  lrs3_test_parakeet_coreml_clean.toml
+  lrs3_test_parakeet_coreml_advanced_30db.toml
+  lrs3_test_parakeet_coreml_advanced_20db.toml
+  lrs3_test_parakeet_coreml_advanced_10db.toml
+  lrs3_test_parakeet_coreml_advanced_5db.toml
+  lrs3_test_parakeet_coreml_advanced_0db.toml
+  lrs3_test_parakeet_coreml_advanced_-5db.toml
   lrs3_hf_tiny.toml
   lrs3_hf_tiny_clean.toml
   lrs3_hf_tiny_white_20db.toml
@@ -33,6 +41,7 @@ src/team1_asr/
   noise.py
   pipeline.py
   prepare_lrs3_hf.py
+  prepare_lrs3_test_hf.py
   prepare_librispeech.py
   types.py
 ```
@@ -138,18 +147,38 @@ log_transcripts = true
 transcript_table_limit = 100
 ```
 
-When enabled, `team1-asr` logs numeric metrics and a transcript table. Set
-`log_artifacts = true` when you also want the run output directory uploaded as a
-W&B artifact. Use `mode = "offline"` for laptop runs that should not upload
-immediately; remove it or set `mode = "online"` when you want to sync to W&B.
+When enabled, `team1-asr` logs numeric metrics and a transcript table.
+`log_artifacts = true` also uploads the run output directory as a W&B artifact.
+`mode = "offline"` keeps laptop runs local. `mode = "online"` syncs directly to
+W&B.
 
-## Recommended next steps
+## LRS3 Test Experiment
 
-1. Replace `data/example_manifest.csv` with a real dataset manifest.
-2. Start with LibriSpeech `--config clean --split validation` as the first real benchmark.
-3. Verify clean-audio WER first, then run noise sweeps.
-4. Add more backends or models behind the same interface.
-5. Add the visual correction stage later on top of the audio baseline.
+The current setup uses LRS3 test audio, Parakeet CoreML, and seeded advanced
+noise from DEMAND/reverb/bandwidth transforms.
+
+Small smoke export using the same manifest path as the checked-in configs:
+
+```bash
+uv run team1-prepare-lrs3-test data/lrs3/hf_test_full --limit 2 --force
+uv run team1-asr configs/lrs3_test_parakeet_coreml_clean.toml
+```
+
+Full test export and Parakeet SNR sweep:
+
+```bash
+uv run team1-prepare-lrs3-test data/lrs3/hf_test_full --force
+uv run --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_clean.toml
+uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_30db.toml
+uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_20db.toml
+uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_10db.toml
+uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_5db.toml
+uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_0db.toml
+uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_-5db.toml
+```
+
+The local DEMAND dataset is expected at `DEMAND/16k`. Dataset exports, generated
+audio, W&B runs, and build outputs are ignored by Git.
 
 ## Noise configuration
 
@@ -188,30 +217,30 @@ For advanced noise, the pipeline applies reverb, then DEMAND background mixing,
 then bandwidth limitation. Random choices are derived from `seed + utterance_id`,
 so SNR sweeps remain reproducible per utterance.
 
-## Parakeet CoreML Workflow
+## Parakeet CoreML
 
-Prepare a small LRS3 test export first:
+LRS3 test export:
 
 ```bash
-uv run team1-prepare-lrs3-test data/lrs3/hf_test_full --limit 2 --force
+uv run team1-prepare-lrs3-test data/lrs3/hf_test_full --force
 ```
 
-Build the FluidAudio/CoreML bridge:
+FluidAudio/CoreML bridge build:
 
 ```bash
 swift build -c release --package-path tools/parakeet_coreml_bridge
 ```
 
-Run a clean Parakeet smoke test:
+Clean Parakeet run:
 
 ```bash
 uv run team1-asr configs/lrs3_test_parakeet_coreml_clean.toml
 ```
 
-Run a seeded advanced-noise example:
+Seeded advanced-noise run:
 
 ```bash
-uv run team1-asr configs/lrs3_test_parakeet_coreml_advanced_10db.toml
+uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_10db.toml
 ```
 
 The Parakeet backend uses `FluidInference/parakeet-tdt-0.6b-v3-coreml` through
@@ -219,7 +248,8 @@ FluidAudio and labels runs as `parakeet-coreml`.
 
 ## Design choice
 
-The scaffold is intentionally centered on a thin local pipeline rather than a third-party CLI wrapper. That keeps the experiment loop explicit and makes it easier to swap:
+The project uses a small local pipeline instead of wrapping everything in one
+external CLI. The important parts stay explicit:
 
 - backend and model
 - noise type
@@ -228,7 +258,8 @@ The scaffold is intentionally centered on a thin local pipeline rather than a th
 
 ## LibriSpeech Workflow
 
-The recommended first real benchmark is Hugging Face `openslr/librispeech_asr`, then a frozen local export for experiments.
+LibriSpeech uses Hugging Face `openslr/librispeech_asr` and exports a local
+manifest plus WAV files.
 
 The `team1-prepare-librispeech` command:
 
@@ -237,8 +268,9 @@ The `team1-prepare-librispeech` command:
 - writes one local `.wav` file per utterance plus a `manifest.csv`
 - can also save a Hugging Face subset with `--save-dataset`, which may require downloading the full split before applying `--limit`
 
-For laptop-friendly evaluation, start with `--config clean --split validation` or
-`--config clean --split test`, then move to `train.100` only if needed.
+Useful split options are `--config clean --split validation` and
+`--config clean --split test`. `train.100` is available when training data is
+needed.
 
 ## LRS3 Hugging Face Workflow
 
@@ -263,6 +295,5 @@ uv run team1-asr configs/lrs3_hf_tiny_white_10db.toml
 uv run team1-asr configs/lrs3_hf_tiny_white_0db.toml
 ```
 
-The Hugging Face mirror currently exposes one `train` split. Treat these runs as
-exploratory ASR/noise experiments rather than an official LRS3 test benchmark
-unless the official test split provenance is confirmed.
+The Hugging Face mirror currently exposes one `train` split. Runs from this
+mirror are exploratory ASR/noise runs, not an official LRS3 test benchmark.

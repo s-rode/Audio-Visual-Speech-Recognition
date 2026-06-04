@@ -36,6 +36,6 @@ metrics_name = "metrics.json"
 enabled = true
 project = "team1-asr"
 run_name = "lrs3-test-parakeet-coreml-advanced-minus5db"
-mode = "offline"
+mode = "online"
 log_transcripts = true
 log_artifacts = false
