@@ -51,7 +51,15 @@ To enable Weights & Biases logging, install the optional tracking dependencies:
 uv sync --extra tracking
 ```
 
+To run DEMAND/reverb/bandwidth noise experiments, install the optional noise
+dependencies:
+
+```bash
+uv sync --extra noise --extra tracking
+```
+
 You also need `ffmpeg` available on the system for Whisper audio decoding.
+Parakeet CoreML experiments additionally need Swift/Xcode command line tools.
 
 This project pins `uv`'s cache to a local `.uv-cache/` directory so `uv run` and `uv sync`
 do not depend on the machine's global cache configuration.
@@ -145,12 +153,7 @@ immediately; remove it or set `mode = "online"` when you want to sync to W&B.
 
 ## Noise configuration
 
-Two noise modes are scaffolded:
-
-- `white`: synthetic white noise
-- `external`: mix a provided noise clip from `noise.noise_path`
-
-Example:
+Legacy flat noise configs still work:
 
 ```toml
 [noise]
@@ -159,6 +162,60 @@ kind = "white"
 snr_db = 10.0
 seed = 0
 ```
+
+Advanced noise uses nested sections and a deterministic seed:
+
+```toml
+[noise]
+seed = 0
+
+[noise.demand]
+enabled = true
+snr_db = 10.0
+noise_path = "DEMAND/16k"
+
+[noise.reverb]
+enabled = true
+
+[noise.bandwidth]
+enabled = true
+```
+
+Place the local DEMAND dataset at `DEMAND/` in the repository root. The pipeline
+uses `DEMAND/16k` and ignores the whole folder in Git.
+
+For advanced noise, the pipeline applies reverb, then DEMAND background mixing,
+then bandwidth limitation. Random choices are derived from `seed + utterance_id`,
+so SNR sweeps remain reproducible per utterance.
+
+## Parakeet CoreML Workflow
+
+Prepare a small LRS3 test export first:
+
+```bash
+uv run team1-prepare-lrs3-test data/lrs3/hf_test_full --limit 2 --force
+```
+
+Build the FluidAudio/CoreML bridge:
+
+```bash
+swift build -c release --package-path tools/parakeet_coreml_bridge
+```
+
+Run a clean Parakeet smoke test:
+
+```bash
+uv run team1-asr configs/lrs3_test_parakeet_coreml_clean.toml
+```
+
+Run a seeded advanced-noise example:
+
+```bash
+uv run team1-asr configs/lrs3_test_parakeet_coreml_advanced_10db.toml
+```
+
+The Parakeet backend uses `FluidInference/parakeet-tdt-0.6b-v3-coreml` through
+FluidAudio and labels runs as `parakeet-coreml`.
 
 ## Design choice
 

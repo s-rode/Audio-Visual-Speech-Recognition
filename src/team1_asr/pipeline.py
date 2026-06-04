@@ -53,37 +53,47 @@ def _run_experiment(
 
     references: list[str] = []
     predictions: list[str] = []
-    with transcript_path.open("w", encoding="utf-8") as handle:
-        for index, row in enumerate(rows, start=1):
-            _show_progress(
-                progress,
-                progress_handle,
-                f"Transcribing {index}/{len(rows)}: {row.utterance_id}",
-            )
-            prepared_audio_path = maybe_apply_noise(row.audio_path, config.noise, output_dir)
-            transcript = backend.transcribe(
-                TranscriptionRequest(
-                    audio_path=prepared_audio_path,
-                    language=row.language,
+    try:
+        with transcript_path.open("w", encoding="utf-8") as handle:
+            for index, row in enumerate(rows, start=1):
+                _show_progress(
+                    progress,
+                    progress_handle,
+                    f"Transcribing {index}/{len(rows)}: {row.utterance_id}",
                 )
-            )
-            handle.write(
-                json.dumps(
-                    _serialize_transcript(
-                        row.utterance_id,
-                        row.audio_path,
-                        row.reference,
-                        prepared_audio_path,
-                        transcript,
-                    ),
-                    ensure_ascii=False,
+                prepared_audio_path = maybe_apply_noise(
+                    row.audio_path,
+                    config.noise,
+                    output_dir,
+                    utterance_id=row.utterance_id,
                 )
-                + "\n"
-            )
+                transcript = backend.transcribe(
+                    TranscriptionRequest(
+                        audio_path=prepared_audio_path,
+                        language=row.language,
+                    )
+                )
+                handle.write(
+                    json.dumps(
+                        _serialize_transcript(
+                            row.utterance_id,
+                            row.audio_path,
+                            row.reference,
+                            prepared_audio_path,
+                            transcript,
+                        ),
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
 
-            if row.reference is not None:
-                references.append(row.reference)
-                predictions.append(transcript.text)
+                if row.reference is not None:
+                    references.append(row.reference)
+                    predictions.append(transcript.text)
+    finally:
+        close = getattr(backend, "close", None)
+        if close is not None:
+            close()
 
     metrics = compute_metrics(references, predictions)
     summary = {
@@ -91,9 +101,14 @@ def _run_experiment(
         "num_utterances": len(rows),
         "backend": config.backend.kind,
         "model": config.backend.model,
-        "noise_enabled": config.noise.enabled,
-        "noise_kind": config.noise.kind if config.noise.enabled else None,
-        "snr_db": config.noise.snr_db if config.noise.enabled else None,
+        "noise_enabled": config.noise.enabled or config.noise.advanced_enabled,
+        "noise_kind": _describe_noise(config.noise),
+        "snr_db": _summary_snr(config.noise),
+        "noise_seed": config.noise.seed,
+        "demand_noise_enabled": config.noise.demand.enabled,
+        "demand_snr_db": config.noise.demand.snr_db if config.noise.demand.enabled else None,
+        "reverb_enabled": config.noise.reverb.enabled,
+        "bandwidth_enabled": config.noise.bandwidth.enabled,
         "utterances_scored": metrics.utterances_scored,
         "wer": metrics.wer,
         "cer": metrics.cer,
@@ -111,6 +126,29 @@ def _run_experiment(
 def _show_progress(enabled: bool, stream: TextIO, message: str) -> None:
     if enabled:
         print(message, file=stream, flush=True)
+
+
+def _describe_noise(config) -> str | None:
+    if config.advanced_enabled:
+        parts = []
+        if config.reverb.enabled:
+            parts.append("reverb")
+        if config.demand.enabled:
+            parts.append("demand")
+        if config.bandwidth.enabled:
+            parts.append("bandwidth")
+        return "+".join(parts)
+    if config.enabled:
+        return config.kind
+    return None
+
+
+def _summary_snr(config) -> float | None:
+    if config.demand.enabled:
+        return config.demand.snr_db
+    if config.enabled:
+        return config.snr_db
+    return None
 
 
 def _serialize_transcript(

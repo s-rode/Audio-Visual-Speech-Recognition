@@ -22,12 +22,53 @@ class BackendConfig:
 
 
 @dataclass
+class DemandNoiseConfig:
+    enabled: bool = False
+    snr_db: float = 0.0
+    noise_path: str = ""
+
+
+@dataclass
+class ReverbNoiseConfig:
+    enabled: bool = False
+    length_range: list[float] = field(default_factory=lambda: [5.0, 15.0])
+    width_range: list[float] = field(default_factory=lambda: [5.0, 15.0])
+    height_range: list[float] = field(default_factory=lambda: [2.0, 6.0])
+    rt60_range: list[float] = field(default_factory=lambda: [0.4, 1.0])
+
+
+@dataclass
+class BandwidthNoiseConfig:
+    enabled: bool = False
+    available_filters: list[str] = field(
+        default_factory=lambda: ["butter", "bessel", "cheby1"]
+    )
+    available_cutoffs_hz: list[int] = field(default_factory=lambda: [2000, 4000, 8000])
+    filter_order: int = 5
+
+
+@dataclass
 class NoiseConfig:
     enabled: bool = False
     kind: str = "white"
     snr_db: float = 20.0
     noise_path: str | None = None
     seed: int = 0
+    demand: DemandNoiseConfig = field(default_factory=DemandNoiseConfig)
+    reverb: ReverbNoiseConfig = field(default_factory=ReverbNoiseConfig)
+    bandwidth: BandwidthNoiseConfig = field(default_factory=BandwidthNoiseConfig)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.demand, dict):
+            self.demand = _load_dataclass(DemandNoiseConfig, self.demand)
+        if isinstance(self.reverb, dict):
+            self.reverb = _load_dataclass(ReverbNoiseConfig, self.reverb)
+        if isinstance(self.bandwidth, dict):
+            self.bandwidth = _load_dataclass(BandwidthNoiseConfig, self.bandwidth)
+
+    @property
+    def advanced_enabled(self) -> bool:
+        return self.demand.enabled or self.reverb.enabled or self.bandwidth.enabled
 
 
 @dataclass
@@ -111,7 +152,9 @@ def _load_simple_toml(path: str | Path) -> dict[str, Any]:
             continue
         if line.startswith("[") and line.endswith("]"):
             section_name = line[1:-1].strip()
-            current = root.setdefault(section_name, {})
+            current = root
+            for section_part in section_name.split("."):
+                current = current.setdefault(section_part.strip(), {})
             continue
 
         key, sep, value = line.partition("=")
@@ -127,6 +170,11 @@ def _parse_simple_value(value: str) -> Any:
         return value[1:-1]
     if value in {"true", "false"}:
         return value == "true"
+    if value.startswith("[") and value.endswith("]"):
+        inner = value[1:-1].strip()
+        if not inner:
+            return []
+        return [_parse_simple_value(part.strip()) for part in inner.split(",")]
     try:
         return int(value)
     except ValueError:

@@ -4,8 +4,13 @@ __pycache__/
 *.pyc
 *.egg-info/
 build/
+DEMAND/
 .DS_Store
 outputs/
 wandb/
 data/librispeech/
 data/lrs3/
+tools/parakeet_coreml_bridge/.build/
+tools/parakeet_coreml_bridge/.swiftpm/
+tools/parakeet_coreml_bridge/Packages/
+*.mlmodelc/
