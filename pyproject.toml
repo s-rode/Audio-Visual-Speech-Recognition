@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "team1-asr"
+version = "0.1.0"
+description = "Modular ASR experiment pipeline for Whisper-based robustness studies."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "datasets>=4.0.0",
+  "faster-whisper>=1.1.0",
+  "jiwer>=3.0.0",
+  "matplotlib>=3.9.4",
+  "numpy>=1.26.0",
+  "soundfile>=0.12.1",
+]
+
+[project.optional-dependencies]
+dev = []
+noise = [
+  "pyroomacoustics>=0.10.1",
+  "scipy>=1.13.0",
+]
+tracking = [
+  "wandb>=0.17.0",
+]
+
+[project.scripts]
+team1-asr = "team1_asr.cli:main"
+team1-download-model = "team1_asr.download_model:main"
+team1-prepare-lrs3-hf = "team1_asr.prepare_lrs3_hf:main"
+team1-prepare-librispeech = "team1_asr.prepare_librispeech:main"
+team1-show-transcripts = "team1_asr.show_transcripts:main"
+team1-prepare-lrs3-test = "team1_asr.prepare_lrs3_test_hf:main"
+
+[tool.uv]
+cache-dir = ".uv-cache"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

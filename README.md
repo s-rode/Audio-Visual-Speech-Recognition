@@ -1,93 +1,299 @@
-# Team 1
+# Team 1 ASR Pipeline
 
-Test for rights
+This repository contains a minimal, modular ASR experiment scaffold:
 
-## Getting started
+- Whisper-based batch transcription via `faster-whisper`
+- Parakeet v3 CoreML transcription through a small Swift bridge
+- a swappable backend interface for comparing ASR models
+- manifest-driven experiment runs
+- optional white-noise and DEMAND/reverb/bandwidth noise injection
+- WER and CER evaluation against references
+- Hugging Face export tooling for LibriSpeech and LRS3 audio subsets
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## Project layout
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
+```text
+configs/
+  lrs3_test_parakeet_coreml_clean.toml
+  lrs3_test_parakeet_coreml_advanced_30db.toml
+  lrs3_test_parakeet_coreml_advanced_20db.toml
+  lrs3_test_parakeet_coreml_advanced_10db.toml
+  lrs3_test_parakeet_coreml_advanced_5db.toml
+  lrs3_test_parakeet_coreml_advanced_0db.toml
+  lrs3_test_parakeet_coreml_advanced_-5db.toml
+  lrs3_hf_tiny.toml
+  lrs3_hf_tiny_clean.toml
+  lrs3_hf_tiny_white_20db.toml
+  lrs3_hf_tiny_white_10db.toml
+  lrs3_hf_tiny_white_0db.toml
+  librispeech_demo_tiny.toml
+  librispeech_validation_whisper.toml
+  noop_smoke.toml
+  whisper_baseline.toml
+data/
+  example_manifest.csv
+src/team1_asr/
+  backends/
+  cli.py
+  config.py
+  evaluation.py
+  manifest.py
+  noise.py
+  pipeline.py
+  prepare_lrs3_hf.py
+  prepare_lrs3_test_hf.py
+  prepare_librispeech.py
+  types.py
 ```
-cd existing_repo
-git remote add origin https://git.rwth-aachen.de/vision/dll26/team-1.git
-git branch -M main
-git push -uf origin main
+
+## Install
+
+Create the virtual environment and install the project with `uv`:
+
+```bash
+uv sync
 ```
 
-## Integrate with your tools
+To enable Weights & Biases logging, install the optional tracking dependencies:
 
-* [Set up project integrations](https://git.rwth-aachen.de/vision/dll26/team-1/-/settings/integrations)
+```bash
+uv sync --extra tracking
+```
 
-## Collaborate with your team
+To run DEMAND/reverb/bandwidth noise experiments, install the optional noise
+dependencies:
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+```bash
+uv sync --extra noise --extra tracking
+```
 
-## Test and Deploy
+You also need `ffmpeg` available on the system for Whisper audio decoding.
+Parakeet CoreML experiments additionally need Swift/Xcode command line tools.
 
-Use the built-in continuous integration in GitLab.
+This project pins `uv`'s cache to a local `.uv-cache/` directory so `uv run` and `uv sync`
+do not depend on the machine's global cache configuration.
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+## Manifest format
 
-***
+The pipeline expects a CSV manifest. The default columns are:
 
-# Editing this README
+```csv
+utterance_id,audio_path,reference,language
+utt-00001,data/audio/file1.wav,ground truth transcript,en
+utt-00002,data/audio/file2.wav,another reference,en
+```
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+- `utterance_id`: optional, auto-generated if missing
+- `audio_path`: required
+- `reference`: optional, but required for WER/CER
+- `language`: optional, falls back to config
 
-## Suggestions for a good README
+## Run
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+Run a smoke test without model dependencies:
 
-## Name
-Choose a self-explaining name for your project.
+```bash
+uv run team1-asr configs/noop_smoke.toml
+```
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+Run the actual Whisper baseline:
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+```bash
+uv run team1-asr configs/whisper_baseline.toml
+```
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+Prepare a LibriSpeech subset from Hugging Face:
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+```bash
+uv run team1-prepare-librispeech data/librispeech/validation --config clean --split validation --limit 500 --force
+```
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+Run Whisper on that LibriSpeech export:
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+```bash
+uv run team1-asr configs/librispeech_validation_whisper.toml
+```
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+For a quick one-utterance demo with a smaller model:
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+```bash
+uv run team1-prepare-librispeech data/librispeech/validation --config clean --split validation --limit 1 --force
+uv run team1-download-model tiny.en
+uv run team1-asr configs/librispeech_demo_tiny.toml
+uv run team1-show-transcripts outputs/librispeech_demo_tiny/transcripts.jsonl --limit 1
+```
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+`team1-download-model` shows Hugging Face download progress and caches the model
+before `team1-asr` loads it. The experiment runner also prints progress messages
+while loading the backend and transcribing utterances.
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+Outputs are written to the configured output directory as:
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+- `transcripts.jsonl`: one JSON record per utterance
+- `metrics.json`: experiment summary plus normalized `wer`/`cer` and raw `raw_wer`/`raw_cer`
 
-## License
-For open source projects, say how it is licensed.
+## Weights & Biases Tracking
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+Experiment configs can opt into W&B logging with a `[wandb]` section:
+
+```toml
+[wandb]
+enabled = true
+project = "team1-asr"
+run_name = "lrs3-tiny-white-10db"
+mode = "offline"
+log_artifacts = true
+log_transcripts = true
+transcript_table_limit = 100
+```
+
+When enabled, `team1-asr` logs numeric metrics and a transcript table.
+`log_artifacts = true` also uploads the run output directory as a W&B artifact.
+`mode = "offline"` keeps laptop runs local. `mode = "online"` syncs directly to
+W&B.
+
+## LRS3 Test Experiment
+
+The current setup uses LRS3 test audio, Parakeet CoreML, and seeded advanced
+noise from DEMAND/reverb/bandwidth transforms.
+
+Small smoke export using the same manifest path as the checked-in configs:
+
+```bash
+uv run team1-prepare-lrs3-test data/lrs3/hf_test_full --limit 2 --force
+uv run team1-asr configs/lrs3_test_parakeet_coreml_clean.toml
+```
+
+Full test export and Parakeet SNR sweep:
+
+```bash
+uv run team1-prepare-lrs3-test data/lrs3/hf_test_full --force
+uv run --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_clean.toml
+uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_30db.toml
+uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_20db.toml
+uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_10db.toml
+uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_5db.toml
+uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_0db.toml
+uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_-5db.toml
+```
+
+The local DEMAND dataset is expected at `DEMAND/16k`. Dataset exports, generated
+audio, W&B runs, and build outputs are ignored by Git.
+
+## Noise configuration
+
+Legacy flat noise configs still work:
+
+```toml
+[noise]
+enabled = true
+kind = "white"
+snr_db = 10.0
+seed = 0
+```
+
+Advanced noise uses nested sections and a deterministic seed:
+
+```toml
+[noise]
+seed = 0
+
+[noise.demand]
+enabled = true
+snr_db = 10.0
+noise_path = "DEMAND/16k"
+
+[noise.reverb]
+enabled = true
+
+[noise.bandwidth]
+enabled = true
+```
+
+Place the local DEMAND dataset at `DEMAND/` in the repository root. The pipeline
+uses `DEMAND/16k` and ignores the whole folder in Git.
+
+For advanced noise, the pipeline applies reverb, then DEMAND background mixing,
+then bandwidth limitation. Random choices are derived from `seed + utterance_id`,
+so SNR sweeps remain reproducible per utterance.
+
+## Parakeet CoreML
+
+LRS3 test export:
+
+```bash
+uv run team1-prepare-lrs3-test data/lrs3/hf_test_full --force
+```
+
+FluidAudio/CoreML bridge build:
+
+```bash
+swift build -c release --package-path tools/parakeet_coreml_bridge
+```
+
+Clean Parakeet run:
+
+```bash
+uv run team1-asr configs/lrs3_test_parakeet_coreml_clean.toml
+```
+
+Seeded advanced-noise run:
+
+```bash
+uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_10db.toml
+```
+
+The Parakeet backend uses `FluidInference/parakeet-tdt-0.6b-v3-coreml` through
+FluidAudio and labels runs as `parakeet-coreml`.
+
+## Design choice
+
+The project uses a small local pipeline instead of wrapping everything in one
+external CLI. The important parts stay explicit:
+
+- backend and model
+- noise type
+- evaluation metrics
+- logging and output format
+
+## LibriSpeech Workflow
+
+LibriSpeech uses Hugging Face `openslr/librispeech_asr` and exports a local
+manifest plus WAV files.
+
+The `team1-prepare-librispeech` command:
+
+- loads a LibriSpeech split directly from Hugging Face
+- exports the first `--limit` utterances in streaming mode for quick local tests
+- writes one local `.wav` file per utterance plus a `manifest.csv`
+- can also save a Hugging Face subset with `--save-dataset`, which may require downloading the full split before applying `--limit`
+
+Useful split options are `--config clean --split validation` and
+`--config clean --split test`. `train.100` is available when training data is
+needed.
+
+## LRS3 Hugging Face Workflow
+
+For audio-only ASR experiments on LRS3, the project can stream the third-party
+Hugging Face mirror `Ainncy/LRS3` without storing the full dataset locally. The
+command downloads one MP4 clip at a time, extracts mono 16 kHz WAV audio with
+`ffmpeg`, writes `manifest.csv`, and deletes the temporary MP4.
+
+```bash
+uv run team1-prepare-lrs3-hf data/lrs3/hf_train_100 --limit 100 --force
+uv run team1-download-model tiny.en
+uv run team1-asr configs/lrs3_hf_tiny.toml
+uv run team1-show-transcripts outputs/lrs3_hf_tiny/transcripts.jsonl --limit 5
+```
+
+Noise variants reuse the same exported audio manifest:
+
+```bash
+uv run team1-asr configs/lrs3_hf_tiny_clean.toml
+uv run team1-asr configs/lrs3_hf_tiny_white_20db.toml
+uv run team1-asr configs/lrs3_hf_tiny_white_10db.toml
+uv run team1-asr configs/lrs3_hf_tiny_white_0db.toml
+```
+
+The Hugging Face mirror currently exposes one `train` split. Runs from this
+mirror are exploratory ASR/noise runs, not an official LRS3 test benchmark.

@@ -1,0 +1,15 @@
+experiment_name = "noop-smoke"
+
+[backend]
+kind = "noop"
+model = "smoke-test"
+language = "en"
+
+[noise]
+enabled = false
+
+[input]
+manifest_path = "data/example_manifest.csv"
+
+[output]
+output_dir = "outputs/noop_smoke"

@@ -1,0 +1,41 @@
+experiment_name = "lrs3-test-parakeet-coreml-advanced-0db"
+
+[backend]
+kind = "parakeet-coreml"
+model = "FluidInference/parakeet-tdt-0.6b-v3-coreml"
+device = "ane"
+language = "en"
+
+[noise]
+seed = 0
+
+[noise.demand]
+enabled = true
+snr_db = 0.0
+noise_path = "DEMAND/16k"
+
+[noise.reverb]
+enabled = true
+
+[noise.bandwidth]
+enabled = true
+
+[input]
+manifest_path = "data/lrs3/hf_test_full/manifest.csv"
+audio_column = "audio_path"
+reference_column = "reference"
+id_column = "utterance_id"
+language_column = "language"
+
+[output]
+output_dir = "outputs/lrs3_test_parakeet_coreml_advanced_0db"
+transcript_name = "transcripts.jsonl"
+metrics_name = "metrics.json"
+
+[wandb]
+enabled = true
+project = "team1-asr"
+run_name = "lrs3-test-parakeet-coreml-advanced-0db"
+mode = "online"
+log_transcripts = true
+log_artifacts = false

@@ -1,0 +1,32 @@
+experiment_name = "whisper-small-en-baseline"
+
+[backend]
+kind = "faster-whisper"
+model = "small.en"
+device = "auto"
+compute_type = "default"
+beam_size = 5
+best_of = 5
+language = "en"
+task = "transcribe"
+word_timestamps = true
+vad_filter = true
+condition_on_previous_text = true
+
+[noise]
+enabled = false
+kind = "white"
+snr_db = 20.0
+seed = 0
+
+[input]
+manifest_path = "data/manifest.csv"
+audio_column = "audio_path"
+reference_column = "reference"
+id_column = "utterance_id"
+language_column = "language"
+
+[output]
+output_dir = "outputs/whisper_baseline"
+transcript_name = "transcripts.jsonl"
+metrics_name = "metrics.json"

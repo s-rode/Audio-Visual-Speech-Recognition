@@ -1,0 +1,39 @@
+experiment_name = "lrs3-hf-tiny-white-10db"
+
+[backend]
+kind = "faster-whisper"
+model = "tiny.en"
+device = "cpu"
+compute_type = "int8"
+beam_size = 1
+best_of = 1
+language = "en"
+task = "transcribe"
+word_timestamps = false
+vad_filter = false
+condition_on_previous_text = false
+
+[noise]
+enabled = true
+kind = "white"
+snr_db = 20.0
+seed = 0
+
+[input]
+manifest_path = "data/lrs3/hf_train_300/manifest.csv"
+audio_column = "audio_path"
+reference_column = "reference"
+id_column = "utterance_id"
+language_column = "language"
+
+[output]
+output_dir = "outputs/lrs3_300_white_20db"
+transcript_name = "transcripts.jsonl"
+metrics_name = "metrics.json"
+
+[wandb]
+enabled = true
+project = "team1-asr"
+run_name = "lrs3-300-white-20db"
+mode = "online"
+log_transcripts = true
