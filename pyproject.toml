@@ -23,6 +23,13 @@ noise = [
   "pyroomacoustics>=0.10.1",
   "scipy>=1.13.0",
 ]
+granite = [
+  "transformers>=4.52.1",
+  "torch",
+  "torchaudio",
+  "accelerate",
+  "peft",
+]
 tracking = [
   "wandb>=0.17.0",
 ]

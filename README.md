@@ -4,6 +4,7 @@ This repository contains a minimal, modular ASR experiment scaffold:
 
 - Whisper-based batch transcription via `faster-whisper`
 - Parakeet v3 CoreML transcription through a small Swift bridge
+- Granite Speech 4.1-2B transcription through Transformers
 - a swappable backend interface for comparing ASR models
 - manifest-driven experiment runs
 - optional white-noise and DEMAND/reverb/bandwidth noise injection
@@ -14,6 +15,13 @@ This repository contains a minimal, modular ASR experiment scaffold:
 
 ```text
 configs/
+  lrs3_test_granite_speech_clean.toml
+  lrs3_test_granite_speech_advanced_30db.toml
+  lrs3_test_granite_speech_advanced_20db.toml
+  lrs3_test_granite_speech_advanced_10db.toml
+  lrs3_test_granite_speech_advanced_5db.toml
+  lrs3_test_granite_speech_advanced_0db.toml
+  lrs3_test_granite_speech_advanced_-5db.toml
   lrs3_test_parakeet_coreml_clean.toml
   lrs3_test_parakeet_coreml_advanced_30db.toml
   lrs3_test_parakeet_coreml_advanced_20db.toml
@@ -65,6 +73,12 @@ dependencies:
 
 ```bash
 uv sync --extra noise --extra tracking
+```
+
+To run Granite Speech through Transformers:
+
+```bash
+uv sync --extra granite --extra noise --extra tracking
 ```
 
 You also need `ffmpeg` available on the system for Whisper audio decoding.
@@ -154,7 +168,7 @@ W&B.
 
 ## LRS3 Test Experiment
 
-The current setup uses LRS3 test audio, Parakeet CoreML, and seeded advanced
+The current setup uses LRS3 test audio, ASR model backends, and seeded advanced
 noise from DEMAND/reverb/bandwidth transforms.
 
 Small smoke export using the same manifest path as the checked-in configs:
@@ -245,6 +259,30 @@ uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_corem
 
 The Parakeet backend uses `FluidInference/parakeet-tdt-0.6b-v3-coreml` through
 FluidAudio and labels runs as `parakeet-coreml`.
+
+## Granite Speech
+
+The Granite backend uses the official Hugging Face Transformers model
+`ibm-granite/granite-speech-4.1-2b`. GGUF, MLX, NAR, ONNX, and other quantized
+or converted variants are separate and are not used for this comparison.
+
+Clean Granite run:
+
+```bash
+uv run --extra granite --extra tracking team1-asr configs/lrs3_test_granite_speech_clean.toml
+```
+
+Full Granite SNR sweep:
+
+```bash
+uv run --extra granite --extra tracking team1-asr configs/lrs3_test_granite_speech_clean.toml
+uv run --extra granite --extra noise --extra tracking team1-asr configs/lrs3_test_granite_speech_advanced_30db.toml
+uv run --extra granite --extra noise --extra tracking team1-asr configs/lrs3_test_granite_speech_advanced_20db.toml
+uv run --extra granite --extra noise --extra tracking team1-asr configs/lrs3_test_granite_speech_advanced_10db.toml
+uv run --extra granite --extra noise --extra tracking team1-asr configs/lrs3_test_granite_speech_advanced_5db.toml
+uv run --extra granite --extra noise --extra tracking team1-asr configs/lrs3_test_granite_speech_advanced_0db.toml
+uv run --extra granite --extra noise --extra tracking team1-asr configs/lrs3_test_granite_speech_advanced_-5db.toml
+```
 
 ## Design choice
 
