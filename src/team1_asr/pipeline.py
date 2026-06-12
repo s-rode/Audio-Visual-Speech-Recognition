@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 import json
 import sys
+from pathlib import Path
 from typing import TextIO
 
 from team1_asr.backends.base import TranscriptionRequest
@@ -59,10 +60,11 @@ def _run_experiment(
     backend = create_backend(config.backend)
     _show_progress(progress, progress_handle, "Backend ready")
     transcript_path = output_dir / config.output.transcript_name
+    transcript_tmp_path = _temporary_output_path(transcript_path)
 
     references: list[str] = []
     predictions: list[str] = []
-    with transcript_path.open("w", encoding="utf-8") as handle:
+    with transcript_tmp_path.open("w", encoding="utf-8") as handle:
         for index, row in enumerate(rows, start=1):
             _show_progress(
                 progress,
@@ -74,6 +76,9 @@ def _run_experiment(
                 TranscriptionRequest(
                     audio_path=prepared_audio_path,
                     language=row.language,
+                    utterance_id=row.utterance_id,
+                    video_path=row.video_path,
+                    reference=row.reference,
                 )
             )
             handle.write(
@@ -83,6 +88,7 @@ def _run_experiment(
                         row.audio_path,
                         row.reference,
                         prepared_audio_path,
+                        row.video_path,
                         transcript,
                     ),
                     ensure_ascii=False,
@@ -93,6 +99,7 @@ def _run_experiment(
             if row.reference is not None:
                 references.append(row.reference)
                 predictions.append(transcript.text)
+    transcript_tmp_path.replace(transcript_path)
 
     metrics = compute_metrics(references, predictions)
     summary = {
@@ -122,17 +129,23 @@ def _show_progress(enabled: bool, stream: TextIO, message: str) -> None:
         print(message, file=stream, flush=True)
 
 
+def _temporary_output_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.tmp")
+
+
 def _serialize_transcript(
     utterance_id: str,
     clean_audio_path: str,
     reference: str | None,
     used_audio_path: str,
+    video_path: str | None,
     transcript: Transcript,
 ) -> dict[str, object]:
     return {
         "utterance_id": utterance_id,
         "clean_audio_path": clean_audio_path,
         "used_audio_path": used_audio_path,
+        "video_path": video_path,
         "reference": reference,
         "prediction": transcript.text,
         "language": transcript.language,

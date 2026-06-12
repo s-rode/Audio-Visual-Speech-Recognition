@@ -19,6 +19,20 @@ class BackendConfig:
     word_timestamps: bool = True
     vad_filter: bool = True
     condition_on_previous_text: bool = True
+    repo_path: str = "external/MMS-LLaMA"
+    checkpoint_path: str = "external/MMS-LLaMA/pretrained_models/mms_llama/1759h/checkpoint_best.pt"
+    llm_path: str = "meta-llama/Llama-3.2-3B"
+    noise_wav: str = "external/MMS-LLaMA/noise/babble_noise.wav"
+    results_dir: str = ""
+    label_dir: str = ""
+    modalities: list[str] = field(default_factory=lambda: ["video", "audio"])
+    cuda_visible_devices: str | None = "0"
+    python_executable: str = "python"
+    extra_args: list[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if isinstance(self.modalities, tuple):
+            self.modalities = list(self.modalities)
 
 @dataclass
 class DemandNoiseConfig:
@@ -65,6 +79,7 @@ class NoiseConfig:
 class InputConfig:
     manifest_path: str = "data/manifest.csv"
     audio_column: str = "audio_path"
+    video_column: str | None = "video_path"
     reference_column: str = "reference"
     id_column: str = "utterance_id"
     language_column: str = "language"
@@ -154,6 +169,11 @@ def _load_simple_toml(path: str | Path) -> dict[str, Any]:
 
 
 def _parse_simple_value(value: str) -> Any:
+    if value.startswith("[") and value.endswith("]"):
+        raw_items = value[1:-1].strip()
+        if not raw_items:
+            return []
+        return [_parse_simple_value(item.strip()) for item in raw_items.split(",")]
     if value.startswith('"') and value.endswith('"'):
         return value[1:-1]
     if value in {"true", "false"}:
