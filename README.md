@@ -178,6 +178,54 @@ When enabled, `team1-asr` logs numeric metrics and a transcript table. Set
 W&B artifact. Use `mode = "offline"` for laptop runs that should not upload
 immediately; remove it or set `mode = "online"` when you want to sync to W&B.
 
+
+## MMS-LLaMA AVSR Workflow
+
+This branch adds an experimental `mms-llama` backend that runs MMS-LLaMA as an
+external subprocess and then parses its `hypo-*.json` output back into this
+pipeline's transcript and WER/CER flow.
+
+The backend expects:
+
+- a local MMS-LLaMA checkout, defaulting to `external/MMS-LLaMA`
+- MMS-LLaMA's own Python 3.9 environment and Fairseq install; set `[backend].python_executable` to that environment's Python
+- MMS-LLaMA checkpoints under `external/MMS-LLaMA/pretrained_models/...`
+- access to `meta-llama/Llama-3.2-3B` or a local replacement path
+- mono 16 kHz WAV audio
+- a manifest with `video_path`; MMS-LLaMA expects mouth-cropped LRS3-style video
+
+To export LRS3 clips with video paths retained:
+
+```bash
+uv run team1-prepare-lrs3-hf data/lrs3/hf_train_100_av --limit 100 --keep-video --force
+```
+
+Raw LRS3 videos must be converted to AV-HuBERT-style mouth ROI clips before
+MMS-LLaMA evaluation. Download the dlib detector, dlib landmark predictor, and
+`20words_mean_face.npy`, install the MMS-LLaMA preprocessing dependencies in its
+Python environment, then run:
+
+```bash
+uv run team1-preprocess-avhubert-video \
+  data/lrs3/hf_train_100_av/manifest.csv \
+  data/lrs3/hf_train_100_avhubert \
+  --cnn-detector external/assets/dlib/mmod_human_face_detector.dat \
+  --face-predictor external/assets/dlib/shape_predictor_68_face_landmarks.dat \
+  --mean-face external/assets/dlib/20words_mean_face.npy \
+  --force
+```
+
+Then point `configs/lrs3_mms_llama_avsr.toml` at the preprocessed manifest and run:
+
+```bash
+uv run team1-asr configs/lrs3_mms_llama_avsr.toml
+```
+
+The project applies configured noise before invoking MMS-LLaMA and passes
+`override.noise_prob=0` to MMS-LLaMA, so audio is not noised twice. Use the same
+manifest and noise settings as the audio-only baselines to compare WER across
+SNR levels.
+
 ## Recommended next steps
 
 1. Replace `data/example_manifest.csv` with a real dataset manifest.

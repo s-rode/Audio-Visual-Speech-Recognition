@@ -15,3 +15,4 @@ wandb/
 data/librispeech/
 data/lrs3/
 data/DEMAND
+external/
