@@ -16,6 +16,7 @@ CHECKPOINT=$(realpath "$CHECKPOINT")
 LLM_PATH=${LLM_PATH:-meta-llama/Llama-3.2-3B}
 NOISE_WAV=${NOISE_WAV:-$ROOT/noise/babble_noise.wav}
 MAX_UPDATE=${MAX_UPDATE:-2000}
+MAX_EPOCH=${MAX_EPOCH:-20}
 MAX_TOKENS=${MAX_TOKENS:-500}
 UPDATE_FREQ=${UPDATE_FREQ:-4}
 LR=${LR:-5e-5}
@@ -75,6 +76,7 @@ export CUDA_VISIBLE_DEVICES
   optimization.update_freq="[$UPDATE_FREQ]" \
   optimization.lr="[$LR]" \
   optimization.max_update="$MAX_UPDATE" \
+  optimization.max_epoch="$MAX_EPOCH" \
   lr_scheduler._name=cosine \
   lr_scheduler.warmup_updates=100 \
   distributed_training.distributed_world_size=1 \
