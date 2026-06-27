@@ -280,10 +280,10 @@ needed.
 
 ## LRS3 Hugging Face Workflow
 
-For audio-only ASR experiments on LRS3, the project can stream the third-party
-Hugging Face mirror `Ainncy/LRS3` without storing the full dataset locally. The
-command downloads one MP4 clip at a time, extracts mono 16 kHz WAV audio with
-`ffmpeg`, writes `manifest.csv`, and deletes the temporary MP4.
+For now we use the Hugging Face mirror `Ainncy/LRS3`, because the official LRS3
+download is not available to us. The helper streams the dataset, downloads one
+MP4 clip at a time, extracts mono 16 kHz WAV audio with `ffmpeg`, and writes a
+normal `manifest.csv`.
 
 ```bash
 uv run team1-prepare-lrs3-hf data/lrs3/hf_train_100 --limit 100 --force
@@ -301,19 +301,20 @@ uv run team1-asr configs/lrs3_hf_tiny_white_10db.toml
 uv run team1-asr configs/lrs3_hf_tiny_white_0db.toml
 ```
 
-The Hugging Face mirror currently exposes one `train` split. Runs from this
-mirror are exploratory ASR/noise runs, not an official LRS3 test benchmark.
+The mirror currently exposes one `train` split. So runs from this source are
+useful for development and first baselines, but they should not yet be described
+as an exact official LRS3 test benchmark.
 
-For AVSR experiments, keep the paired MP4 clips and write `video_path` into the
+For AVSR experiments, keep the MP4 clips as well. This adds `video_path` to the
 manifest:
 
 ```bash
 uv run team1-prepare-lrs3-hf data/lrs3/hf_av_tiny --limit 10 --keep-video --force
 ```
 
-To run visual or audio-visual AVEC closer to the authors' preprocessing, convert
-the raw video manifest to AVEC-style mouth ROI clips using the editable AVEC
-environment:
+For visual-only and audio-visual AVEC, the raw videos should first be converted
+to mouth ROI clips. This is closer to what AVEC does than just using the full
+video or a simple center crop:
 
 ```bash
 uv run team1-preprocess-avec-video \
@@ -322,19 +323,44 @@ uv run team1-preprocess-avec-video \
   --force
 ```
 
-This command delegates to `external/AVEC/.venv/bin/python3` and reuses AVEC's
-`LipDetectCrop` with `media/20words_mean_face.npy`. It requires the AVEC
-environment to include `ibug.face_detection` and `ibug.face_alignment`.
-AVEC's README installs those from `https://github.com/hhj1897/face_detection`
-and `https://github.com/hhj1897/face_alignment`; the detector repository uses
-Git LFS for model weights, so preprocessing may be blocked if the upstream LFS
-quota is unavailable.
+This command calls `external/AVEC/.venv/bin/python3` internally and reuses
+AVEC's `LipDetectCrop` with `media/20words_mean_face.npy`. For this to work,
+the AVEC environment needs the `ibug.face_detection` and `ibug.face_alignment`
+packages. I used the same repos that AVEC links in its README:
+
+```bash
+cd external/AVEC
+source .venv/bin/activate
+
+mkdir -p external_deps
+git clone https://github.com/hhj1897/face_detection.git external_deps/face_detection
+git clone https://github.com/hhj1897/face_alignment.git external_deps/face_alignment
+
+.venv/bin/python3 -m pip install -e external_deps/face_detection
+.venv/bin/python3 -m pip install -e external_deps/face_alignment
+```
+
+The face detection repo uses Git LFS for one model file, so the clone can fail
+if the upstream LFS quota is used up.
+
+If that happens, use the RetinaFace weights linked by the original
+`biubug6/Pytorch_Retinaface` repository instead:
+`https://drive.google.com/drive/folders/1oZRSG0ZegbVkVwUd8wUIQx8W7yfZ_ki1`.
+Download `Resnet50_Final.pth` and place it at:
+
+```text
+external/AVEC/external_deps/face_detection/ibug/face_detection/retina_face/weights/Resnet50_Final.pth
+```
+
+These weights are only needed locally for preprocessing. Do not commit them. The
+project ignores `external/AVEC/`, `data/lrs3/`, and `outputs/`, so the AVEC
+checkout, generated mouth ROI videos, and run outputs stay local.
 
 ## AVEC Workflow
 
-AVEC is used as an editable external source checkout so that later experiments
-can fine-tune checkpoints or modify the model code without rewriting the local
-ASR/noise/metrics pipeline.
+AVEC is kept as an editable external checkout. This is useful because we can run
+their pretrained models now, but still change or fine-tune the model later
+without rewriting the rest of our ASR/noise/metrics pipeline.
 
 Initial setup:
 
@@ -345,9 +371,9 @@ pip install -r requirements.txt
 python download_checkpoints_and_tokenizers.py
 ```
 
-The official AVEC configs expect pretrained checkpoints under their own
-`callbacks/...` folders and tokenizers under `datasets/LRS3`. Verify the
-official checkout first:
+The official AVEC configs expect checkpoints and tokenizers in AVEC's own folder
+layout. If something breaks, it is worth checking the AVEC checkout directly
+first:
 
 ```bash
 cd external/AVEC
@@ -356,7 +382,7 @@ python main.py -c configs/LRS23/VO/EffConfInterCTC.py --mode evaluation --checkp
 python main.py -c configs/LRS23/AV/EffConfInterCTC.py --mode evaluation --checkpoint checkpoints_swa-equal-60-70.ckpt --eval_steps 1
 ```
 
-Once the official checkout works, run it through this repository's experiment
+Once the AVEC checkout is set up, run the same models through our experiment
 pipeline:
 
 ```bash
@@ -365,7 +391,7 @@ uv run team1-asr configs/lrs3_avec_visual_clean.toml
 uv run team1-asr configs/lrs3_avec_av_clean.toml
 ```
 
-After mouth ROI preprocessing, use:
+After mouth ROI preprocessing, use these configs:
 
 ```bash
 uv run team1-asr configs/lrs3_avec_audio_preprocessed_clean.toml
@@ -373,11 +399,12 @@ uv run team1-asr configs/lrs3_avec_visual_preprocessed_clean.toml
 uv run team1-asr configs/lrs3_avec_av_preprocessed_clean.toml
 ```
 
-The `avec` backend starts `scripts/run_avec_manifest.py` as a subprocess.
-That runner loads the editable AVEC checkout, decodes one manifest row at a time,
-and returns predictions in the same `transcripts.jsonl` / `metrics.json` format
-as Whisper and Parakeet. Visual and audio-visual runs require the manifest's
-`video_path` to point at suitable mouth-region video input. The Hugging Face
-mirror is the current data source; treat full-score reproduction as an
-equivalent-source attempt until split identity and preprocessing parity are
-verified.
+The `avec` backend starts `scripts/run_avec_manifest.py` as a subprocess. The
+runner loads the editable AVEC checkout, processes one manifest row at a time,
+and writes the same `transcripts.jsonl` / `metrics.json` format as the other
+backends. For visual-only and audio-visual runs, `video_path` should point to
+the mouth ROI video.
+
+For now, full LRS3 score reproduction should be treated as an equivalent-source
+attempt, not as an exact reproduction. We still need to check the HF mirror
+split/content and run the preprocessing at scale.
