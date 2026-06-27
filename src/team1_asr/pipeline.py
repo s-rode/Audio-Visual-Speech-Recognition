@@ -74,6 +74,11 @@ def _run_experiment(
                         utterance_id=row.utterance_id,
                         video_path=row.video_path,
                         reference=row.reference,
+                        video_preprocessing=(
+                            str(row.metadata["video_preprocessing"])
+                            if row.metadata and "video_preprocessing" in row.metadata
+                            else None
+                        ),
                     )
                 )
                 handle.write(

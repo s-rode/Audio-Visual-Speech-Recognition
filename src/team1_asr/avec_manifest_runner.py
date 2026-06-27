@@ -73,6 +73,7 @@ def _serve(transcriber: "_BaseTranscriber", stream: TextIO) -> None:
                 video_path=message.get("video_path"),
                 language=message.get("language"),
                 utterance_id=message.get("utterance_id"),
+                video_preprocessing=message.get("video_preprocessing"),
             )
             _write({"type": "transcript", **result})
         except Exception as exc:
@@ -86,6 +87,7 @@ class _BaseTranscriber:
         video_path: object,
         language: object,
         utterance_id: object,
+        video_preprocessing: object = None,
     ) -> dict[str, object]:
         raise NotImplementedError
 
@@ -100,6 +102,7 @@ class _MockTranscriber(_BaseTranscriber):
         video_path: object,
         language: object,
         utterance_id: object,
+        video_preprocessing: object = None,
     ) -> dict[str, object]:
         return {
             "text": self._args.mock_transcript,
@@ -110,6 +113,7 @@ class _MockTranscriber(_BaseTranscriber):
                 "audio_path": audio_path,
                 "video_path": video_path,
                 "utterance_id": utterance_id,
+                "video_preprocessing": video_preprocessing,
             },
         }
 
@@ -143,6 +147,7 @@ class _AvecTranscriber(_BaseTranscriber):
         video_path: object,
         language: object,
         utterance_id: object,
+        video_preprocessing: object = None,
     ) -> dict[str, object]:
         audio_path_obj = Path(audio_path)
         if not audio_path_obj.exists():
@@ -174,6 +179,7 @@ class _AvecTranscriber(_BaseTranscriber):
                 "runtime": "AVEC",
                 "modality": self._args.modality,
                 "utterance_id": utterance_id,
+                "video_preprocessing": video_preprocessing or "center_crop",
             },
         }
 

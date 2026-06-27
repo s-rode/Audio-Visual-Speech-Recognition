@@ -32,6 +32,7 @@ class AvecBackend(ASRBackend):
                 "language": request.language or self._config.language,
                 "utterance_id": request.utterance_id,
                 "reference": request.reference,
+                "video_preprocessing": request.video_preprocessing,
             }
         )
         response = self._read_message()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from team1_asr.config import InputConfig
 
@@ -14,6 +15,7 @@ class ManifestRow:
     reference: str | None
     language: str | None
     video_path: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 def load_manifest(config: InputConfig) -> list[ManifestRow]:
@@ -30,6 +32,13 @@ def load_manifest(config: InputConfig) -> list[ManifestRow]:
             utterance_id = row.get(config.id_column) or f"utt-{index:05d}"
             reference = row.get(config.reference_column) or None
             language = row.get(config.language_column) or None
+            metadata: dict[str, Any] = {}
+            if (
+                config.video_preprocessing_column
+                and config.video_preprocessing_column in row
+                and row[config.video_preprocessing_column]
+            ):
+                metadata["video_preprocessing"] = row[config.video_preprocessing_column]
             rows.append(
                 ManifestRow(
                     utterance_id=utterance_id,
@@ -37,6 +46,7 @@ def load_manifest(config: InputConfig) -> list[ManifestRow]:
                     reference=reference,
                     language=language,
                     video_path=video_path,
+                    metadata=metadata,
                 )
             )
     return rows

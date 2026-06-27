@@ -86,6 +86,7 @@ class InputConfig:
     reference_column: str = "reference"
     id_column: str = "utterance_id"
     language_column: str = "language"
+    video_preprocessing_column: str | None = "video_preprocessing"
 
 
 @dataclass

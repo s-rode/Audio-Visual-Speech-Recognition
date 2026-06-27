@@ -14,8 +14,8 @@ class ManifestTest(unittest.TestCase):
             root = Path(temp_dir)
             manifest = root / "manifest.csv"
             manifest.write_text(
-                "utterance_id,audio_path,video_path,reference,language\n"
-                "utt-1,audio/utt.wav,video/utt.mp4,hello,en\n",
+                "utterance_id,audio_path,video_path,reference,language,video_preprocessing\n"
+                "utt-1,audio/utt.wav,video/utt.mp4,hello,en,avec_mouth_roi\n",
                 encoding="utf-8",
             )
 
@@ -24,6 +24,7 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertTrue(rows[0].audio_path.endswith("audio/utt.wav"))
         self.assertTrue(rows[0].video_path.endswith("video/utt.mp4"))
+        self.assertEqual(rows[0].metadata, {"video_preprocessing": "avec_mouth_roi"})
 
     def test_missing_video_column_is_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

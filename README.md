@@ -311,6 +311,25 @@ manifest:
 uv run team1-prepare-lrs3-hf data/lrs3/hf_av_tiny --limit 10 --keep-video --force
 ```
 
+To run visual or audio-visual AVEC closer to the authors' preprocessing, convert
+the raw video manifest to AVEC-style mouth ROI clips using the editable AVEC
+environment:
+
+```bash
+uv run team1-preprocess-avec-video \
+  data/lrs3/hf_av_tiny/manifest.csv \
+  data/lrs3/hf_av_tiny_avec_roi \
+  --force
+```
+
+This command delegates to `external/AVEC/.venv/bin/python3` and reuses AVEC's
+`LipDetectCrop` with `media/20words_mean_face.npy`. It requires the AVEC
+environment to include `ibug.face_detection` and `ibug.face_alignment`.
+AVEC's README installs those from `https://github.com/hhj1897/face_detection`
+and `https://github.com/hhj1897/face_alignment`; the detector repository uses
+Git LFS for model weights, so preprocessing may be blocked if the upstream LFS
+quota is unavailable.
+
 ## AVEC Workflow
 
 AVEC is used as an editable external source checkout so that later experiments
@@ -346,8 +365,19 @@ uv run team1-asr configs/lrs3_avec_visual_clean.toml
 uv run team1-asr configs/lrs3_avec_av_clean.toml
 ```
 
+After mouth ROI preprocessing, use:
+
+```bash
+uv run team1-asr configs/lrs3_avec_audio_preprocessed_clean.toml
+uv run team1-asr configs/lrs3_avec_visual_preprocessed_clean.toml
+uv run team1-asr configs/lrs3_avec_av_preprocessed_clean.toml
+```
+
 The `avec` backend starts `scripts/run_avec_manifest.py` as a subprocess.
 That runner loads the editable AVEC checkout, decodes one manifest row at a time,
 and returns predictions in the same `transcripts.jsonl` / `metrics.json` format
 as Whisper and Parakeet. Visual and audio-visual runs require the manifest's
-`video_path` to point at suitable mouth-region video input.
+`video_path` to point at suitable mouth-region video input. The Hugging Face
+mirror is the current data source; treat full-score reproduction as an
+equivalent-source attempt until split identity and preprocessing parity are
+verified.

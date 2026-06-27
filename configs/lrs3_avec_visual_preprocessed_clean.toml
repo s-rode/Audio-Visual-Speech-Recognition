@@ -1,0 +1,28 @@
+experiment_name = "lrs3-avec-visual-preprocessed-clean"
+
+[backend]
+kind = "avec"
+model = "avec-visual"
+repo_path = "external/AVEC"
+config_file = "configs/LRS23/VO/EffConfInterCTC.py"
+checkpoint = "checkpoints_swa-equal-90-100.ckpt"
+modality = "visual"
+language = "en"
+python_executable = "external/AVEC/.venv/bin/python3"
+
+[noise]
+enabled = false
+
+[input]
+manifest_path = "data/lrs3/hf_av_tiny_avec_roi/manifest.csv"
+audio_column = "audio_path"
+video_column = "video_path"
+reference_column = "reference"
+id_column = "utterance_id"
+language_column = "language"
+video_preprocessing_column = "video_preprocessing"
+
+[output]
+output_dir = "outputs/lrs3_avec_visual_preprocessed_clean"
+transcript_name = "transcripts.jsonl"
+metrics_name = "metrics.json"

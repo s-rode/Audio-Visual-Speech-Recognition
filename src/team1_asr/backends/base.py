@@ -13,6 +13,7 @@ class TranscriptionRequest:
     utterance_id: str | None = None
     video_path: str | None = None
     reference: str | None = None
+    video_preprocessing: str | None = None
 
 
 class ASRBackend(Protocol):
