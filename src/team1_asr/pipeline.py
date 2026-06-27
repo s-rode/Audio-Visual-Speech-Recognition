@@ -71,6 +71,9 @@ def _run_experiment(
                     TranscriptionRequest(
                         audio_path=prepared_audio_path,
                         language=row.language,
+                        utterance_id=row.utterance_id,
+                        video_path=row.video_path,
+                        reference=row.reference,
                     )
                 )
                 handle.write(
@@ -80,6 +83,7 @@ def _run_experiment(
                             row.audio_path,
                             row.reference,
                             prepared_audio_path,
+                            row.video_path,
                             transcript,
                         ),
                         ensure_ascii=False,
@@ -156,12 +160,14 @@ def _serialize_transcript(
     clean_audio_path: str,
     reference: str | None,
     used_audio_path: str,
+    video_path: str | None,
     transcript: Transcript,
 ) -> dict[str, object]:
     return {
         "utterance_id": utterance_id,
         "clean_audio_path": clean_audio_path,
         "used_audio_path": used_audio_path,
+        "video_path": video_path,
         "reference": reference,
         "prediction": transcript.text,
         "language": transcript.language,

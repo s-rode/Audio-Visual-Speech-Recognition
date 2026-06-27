@@ -10,6 +10,7 @@ outputs/
 wandb/
 data/librispeech/
 data/lrs3/
+external/AVEC/
 tools/parakeet_coreml_bridge/.build/
 tools/parakeet_coreml_bridge/.swiftpm/
 tools/parakeet_coreml_bridge/Packages/

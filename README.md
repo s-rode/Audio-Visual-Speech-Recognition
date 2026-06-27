@@ -4,6 +4,8 @@ This repository contains a minimal, modular ASR experiment scaffold:
 
 - Whisper-based batch transcription via `faster-whisper`
 - Parakeet v3 CoreML transcription through a small Swift bridge
+- AVEC audio-only, visual-only, and audio-visual transcription through an
+  editable external checkout
 - a swappable backend interface for comparing ASR models
 - manifest-driven experiment runs
 - optional white-noise and DEMAND/reverb/bandwidth noise injection
@@ -21,6 +23,9 @@ configs/
   lrs3_test_parakeet_coreml_advanced_5db.toml
   lrs3_test_parakeet_coreml_advanced_0db.toml
   lrs3_test_parakeet_coreml_advanced_-5db.toml
+  lrs3_avec_audio_clean.toml
+  lrs3_avec_visual_clean.toml
+  lrs3_avec_av_clean.toml
   lrs3_hf_tiny.toml
   lrs3_hf_tiny_clean.toml
   lrs3_hf_tiny_white_20db.toml
@@ -78,13 +83,14 @@ do not depend on the machine's global cache configuration.
 The pipeline expects a CSV manifest. The default columns are:
 
 ```csv
-utterance_id,audio_path,reference,language
-utt-00001,data/audio/file1.wav,ground truth transcript,en
-utt-00002,data/audio/file2.wav,another reference,en
+utterance_id,audio_path,video_path,reference,language
+utt-00001,data/audio/file1.wav,data/video/file1.mp4,ground truth transcript,en
+utt-00002,data/audio/file2.wav,data/video/file2.mp4,another reference,en
 ```
 
 - `utterance_id`: optional, auto-generated if missing
 - `audio_path`: required
+- `video_path`: optional, required by visual and audio-visual backends
 - `reference`: optional, but required for WER/CER
 - `language`: optional, falls back to config
 
@@ -297,3 +303,51 @@ uv run team1-asr configs/lrs3_hf_tiny_white_0db.toml
 
 The Hugging Face mirror currently exposes one `train` split. Runs from this
 mirror are exploratory ASR/noise runs, not an official LRS3 test benchmark.
+
+For AVSR experiments, keep the paired MP4 clips and write `video_path` into the
+manifest:
+
+```bash
+uv run team1-prepare-lrs3-hf data/lrs3/hf_av_tiny --limit 10 --keep-video --force
+```
+
+## AVEC Workflow
+
+AVEC is used as an editable external source checkout so that later experiments
+can fine-tune checkpoints or modify the model code without rewriting the local
+ASR/noise/metrics pipeline.
+
+Initial setup:
+
+```bash
+git clone https://github.com/burchim/AVEC external/AVEC
+cd external/AVEC
+pip install -r requirements.txt
+python download_checkpoints_and_tokenizers.py
+```
+
+The official AVEC configs expect pretrained checkpoints under their own
+`callbacks/...` folders and tokenizers under `datasets/LRS3`. Verify the
+official checkout first:
+
+```bash
+cd external/AVEC
+python main.py -c configs/LRS23/AO/EffConfCTC.py --mode evaluation --checkpoint checkpoints_swa-equal-200-210.ckpt --eval_steps 1
+python main.py -c configs/LRS23/VO/EffConfInterCTC.py --mode evaluation --checkpoint checkpoints_swa-equal-90-100.ckpt --eval_steps 1
+python main.py -c configs/LRS23/AV/EffConfInterCTC.py --mode evaluation --checkpoint checkpoints_swa-equal-60-70.ckpt --eval_steps 1
+```
+
+Once the official checkout works, run it through this repository's experiment
+pipeline:
+
+```bash
+uv run team1-asr configs/lrs3_avec_audio_clean.toml
+uv run team1-asr configs/lrs3_avec_visual_clean.toml
+uv run team1-asr configs/lrs3_avec_av_clean.toml
+```
+
+The `avec` backend starts `scripts/run_avec_manifest.py` as a subprocess.
+That runner loads the editable AVEC checkout, decodes one manifest row at a time,
+and returns predictions in the same `transcripts.jsonl` / `metrics.json` format
+as Whisper and Parakeet. Visual and audio-visual runs require the manifest's
+`video_path` to point at suitable mouth-region video input.

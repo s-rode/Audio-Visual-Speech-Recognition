@@ -94,6 +94,36 @@ seed = 3
         self.assertEqual(config.noise.snr_db, 5.0)
         self.assertFalse(config.noise.advanced_enabled)
 
+    def test_loads_avec_backend_section(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.toml"
+            config_path.write_text(
+                """
+[backend]
+kind = "avec"
+model = "avec-audio-visual"
+repo_path = "external/AVEC"
+config_file = "configs/LRS23/AV/EffConfInterCTC.py"
+checkpoint = "checkpoints_swa-equal-60-70.ckpt"
+modality = "audio_visual"
+python_executable = ".venv-avec/bin/python"
+extra_args = ["--mock-transcript", "hello"]
+
+[input]
+video_column = "mouth_roi_path"
+""",
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+        self.assertEqual(config.backend.kind, "avec")
+        self.assertEqual(config.backend.repo_path, "external/AVEC")
+        self.assertEqual(config.backend.modality, "audio_visual")
+        self.assertEqual(config.backend.python_executable, ".venv-avec/bin/python")
+        self.assertEqual(config.backend.extra_args, ["--mock-transcript", "hello"])
+        self.assertEqual(config.input.video_column, "mouth_roi_path")
+
 
 if __name__ == "__main__":
     unittest.main()
