@@ -14,7 +14,9 @@ dependencies = [
   "jiwer>=3.0.0",
   "matplotlib>=3.9.4",
   "numpy>=1.26.0",
+  "onnxruntime>=1.16.0,<1.20",
   "soundfile>=0.12.1",
+  "yt-dlp>=2025.10.14",
 ]
 
 [project.optional-dependencies]

@@ -363,6 +363,13 @@ def _load_wav(path: Path, torch):
         audio = np.frombuffer(raw, dtype="<i2").astype("float32") / 32768.0
     elif sample_width == 4:
         audio = np.frombuffer(raw, dtype="<i4").astype("float32") / 2147483648.0
+    elif sample_width == 3:
+        raw_bytes = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3)
+        audio = (raw_bytes[:, 0].astype(np.int32) |
+                 (raw_bytes[:, 1].astype(np.int32) << 8) |
+                 (raw_bytes[:, 2].astype(np.int32) << 16))
+        audio = np.where(audio >= 0x800000, audio - 0x1000000, audio)
+        audio = audio.astype(np.float32) / 8388608.0
     else:
         raise ValueError(f"Unsupported WAV sample width {sample_width} bytes: {path}")
 
