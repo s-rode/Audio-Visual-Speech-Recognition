@@ -1,0 +1,169 @@
+diff --git a/nnet/datasets.py b/nnet/datasets.py
+index 99c621a..090f565 100644
+--- a/nnet/datasets.py
++++ b/nnet/datasets.py
+@@ -835,3 +835,137 @@ class LRW(Dataset):
+             with open(path, 'wb') as f:
+                 for chunk in r.iter_content(chunk_size=1024):
+                     f.write(chunk)
++
++
++class VoxMM(Dataset):
++    """VoxMM dataset loaded from a manifest CSV.
++
++    CSV columns: utterance_id, audio_path, video_path, reference, language
++
++    Videos are expected to be preprocessed 88x88 grayscale mouth ROI MP4s.
++    Audio is expected to be 16kHz mono WAV files.
++    """
++
++    def __init__(
++        self,
++        batch_size,
++        collate_fn,
++        manifest_path,
++        tokenizer_path="datasets/LRS3/tokenizerbpe256.model",
++        shuffle=True,
++        ascending=False,
++        video_max_length=None,
++        audio_max_length=None,
++        label_max_length=None,
++        load_audio=True,
++        load_video=True,
++        video_transform=None,
++        audio_transform=None,
++        align=True,
++        img_mean=(0.5,),
++        img_std=(0.5,),
++    ):
++        super(VoxMM, self).__init__(
++            batch_size=batch_size,
++            collate_fn=collate_fn,
++            root=".",
++            shuffle=shuffle and not ascending,
++        )
++
++        import csv
++        self.load_audio = load_audio
++        self.load_video = load_video
++        self.video_transform = video_transform
++        self.audio_transform = audio_transform
++        self.video_max_length = video_max_length
++        self.audio_max_length = audio_max_length
++        self.label_max_length = label_max_length
++        self.align = align
++        self.ascending = ascending
++        self.img_mean = img_mean
++        self.img_std = img_std
++
++        self.tokenizer = spm.SentencePieceProcessor(tokenizer_path)
++
++        # Load manifest
++        self.samples = []
++        with open(manifest_path, newline="", encoding="utf-8") as f:
++            for row in csv.DictReader(f):
++                self.samples.append({
++                    "utterance_id": row["utterance_id"],
++                    "audio_path": row["audio_path"],
++                    "video_path": row["video_path"],
++                    "reference": row["reference"],
++                })
++
++        if ascending:
++            self.samples.sort(key=lambda x: x["utterance_id"])
++
++    def __len__(self):
++        return len(self.samples)
++
++    def __getitem__(self, n):
++        sample = self.samples[n]
++
++        # Load video
++        if self.load_video:
++            video, _, _ = torchvision.io.read_video(sample["video_path"], pts_unit="sec")
++            # video: (T, H, W, C) uint8
++            video = video.float() / 255.0  # normalize to [0,1]
++            # Already grayscale stored as RGB (3 channels same value) - convert
++            video = video.mean(dim=-1, keepdim=True)  # (T, H, W, 1)
++            # Normalize to [-1, 1]
++            video = (video - 0.5) / 0.5
++            # Apply video transform (RandomCrop, etc.)
++            if self.video_transform is not None:
++                # transform expects (C, T, H, W) - same as LRS dataset
++                video = video.permute(3, 0, 1, 2)  # (1, T, H, W)
++                video = self.video_transform(video)
++                video = video.permute(1, 2, 3, 0)  # back to (T, H, W, C)
++                # align_video_to_audio expects (Tv, H, W, C)
++            # video_max_length filter
++            if self.video_max_length is not None and video.shape[0] > self.video_max_length:
++                return self.__getitem__(torch.randint(0, self.__len__(), []).item())
++        else:
++            video = None
++
++        # Load audio
++        if self.load_audio:
++            import wave as _wave
++            import numpy as _np
++            with _wave.open(sample["audio_path"], "rb") as wf:
++                sr = wf.getframerate()
++                sw = wf.getsampwidth()
++                raw = wf.readframes(wf.getnframes())
++            if sw == 2:
++                arr = _np.frombuffer(raw, dtype=_np.int16).astype(_np.float32) / 32768.0
++            elif sw == 4:
++                arr = _np.frombuffer(raw, dtype=_np.int32).astype(_np.float32) / 2147483648.0
++            else:
++                raw_bytes = _np.frombuffer(raw, dtype=_np.uint8).reshape(-1, 3)
++                arr = (raw_bytes[:, 0].astype(_np.int32) | (raw_bytes[:, 1].astype(_np.int32) << 8) | (raw_bytes[:, 2].astype(_np.int32) << 16))
++                arr = _np.where(arr >= 0x800000, arr - 0x1000000, arr).astype(_np.float32) / 8388608.0
++            audio = torch.from_numpy(arr)
++            if self.audio_transform is not None:
++                audio = self.audio_transform(audio)
++            if self.audio_max_length is not None and audio.shape[0] > self.audio_max_length:
++                return self.__getitem__(torch.randint(0, self.__len__(), []).item())
++        else:
++            audio = None
++
++        # Tokenize label
++        text = sample["reference"].lower()
++        label = torch.LongTensor(self.tokenizer.encode(text))
++        if self.label_max_length is not None and label.shape[0] > self.label_max_length:
++            return self.__getitem__(torch.randint(0, self.__len__(), []).item())
++
++        # Align video to audio
++        if self.load_video and self.load_audio and self.align:
++            video = transforms.align_video_to_audio(video, audio)
++
++        # Compute lengths
++        video_len = torch.tensor(video.shape[0] if video is not None else 0, dtype=torch.long)
++        audio_len = torch.tensor(audio.shape[0] if audio is not None else 0, dtype=torch.long)
++        label_len = torch.tensor(label.shape[0], dtype=torch.long)
++
++        return video, audio, label, video_len, audio_len, label_len
+diff --git a/nnet/transforms.py b/nnet/transforms.py
+index 1216a72..4b65ac6 100644
+--- a/nnet/transforms.py
++++ b/nnet/transforms.py
+@@ -171,11 +171,18 @@ def align_video_to_audio(video, audio):
+     Tv, H, W, C = video.shape # (Tv, H, W, Cv)
+     Ta = audio.shape[0] # (Ta,)
+ 
+-    padding = Ta // (160*2*2) + 1 - Tv
+-    padding_left = padding // 2
+-    padding_right = padding // 2 + padding % 2
+-
+-    video = torch.cat([video.new_zeros(padding_left, H, W, C), video, video.new_zeros(padding_right, H, W, C)], dim=0)
++    target = Ta // (160*2*2) + 1
++    padding = target - Tv
++    if padding >= 0:
++        padding_left = padding // 2
++        padding_right = padding // 2 + padding % 2
++        video = torch.cat([video.new_zeros(padding_left, H, W, C), video, video.new_zeros(padding_right, H, W, C)], dim=0)
++    else:
++        # video longer than audio: trim symmetrically
++        trim = -padding
++        trim_left = trim // 2
++        trim_right = trim // 2 + trim % 2
++        video = video[trim_left: Tv - trim_right]
+ 
+     return video

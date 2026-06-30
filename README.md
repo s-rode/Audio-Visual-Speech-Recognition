@@ -444,6 +444,23 @@ relevant `manifest.csv` and either:
 - find/replace the old base path with your local `data/voxmm_preprocessed`
   (or `data/voxmm_dev_eval`) path.
 
+### Applying the AVEC patch
+
+The VoxMM dataset loader and a small bugfix to `align_video_to_audio` (handles
+videos slightly longer than their audio, which happens with our preprocessing)
+live as a patch against the AVEC checkout, since `external/AVEC/` itself is
+not tracked in this repo. After cloning AVEC and downloading checkpoints,
+apply the patch from the AVEC checkout root:
+
+```bash
+cd external/AVEC
+git apply ../../patches/avec_voxmm_dataset.patch
+```
+
+This adds `nnet.datasets.VoxMM` (a CSV-manifest-driven dataset that reads our
+preprocessed mouth ROI clips and WAVs) and fixes `align_video_to_audio` to
+trim rather than crash when the video is longer than the audio.
+
 ### Finetuning config
 
 The finetuning config is tracked at `configs/VoxMM/EffConfInterCTC_finetune.py`
