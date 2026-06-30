@@ -1,5 +1,6 @@
 import sys
 import os
+from pathlib import Path
 sys.path.append("../../")
 
 import nnet
@@ -21,11 +22,28 @@ loss_weights = {
     "outputs": 0.5
 }
 
+def _env_or_existing_path(env_name, local_path, cluster_path):
+    value = os.environ.get(env_name)
+    if value:
+        return value
+    if Path(local_path).exists():
+        return local_path
+    return cluster_path
+
+
 # Paths
 tokenizer_path = "datasets/LRS3/tokenizerbpe256.model"
 pretrained_checkpoint = os.environ.get("AVEC_PRETRAINED_CHECKPOINT", "callbacks/LRS23/AV/EffConfInterCTC/checkpoints_swa-equal-60-70.ckpt")
-manifest_train = os.environ.get("VOXMM_TRAIN_MANIFEST", "../../data/voxmm_preprocessed/manifest.local.csv")
-manifest_eval = os.environ.get("VOXMM_EVAL_MANIFEST", "../../data/voxmm_dev_eval/manifest.local.csv")
+manifest_train = _env_or_existing_path(
+    "VOXMM_TRAIN_MANIFEST",
+    "../../data/voxmm_preprocessed/manifest.local.csv",
+    "/hpcwork/ww202463/voxmm_preprocessed/manifest.csv",
+)
+manifest_eval = _env_or_existing_path(
+    "VOXMM_EVAL_MANIFEST",
+    "../../data/voxmm_dev_eval/manifest.local.csv",
+    "/hpcwork/ww202463/team-1-data/lrs_voxmm/manifest_dev_eval_avec_roi/manifest.csv",
+)
 callback_path = os.environ.get("VOXMM_CALLBACK_PATH", "callbacks/VoxMM/AV/EffConfInterCTC_finetune")
 
 # Beam Search - disabled (no ctcdecode)
