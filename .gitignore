@@ -10,6 +10,10 @@ outputs/
 wandb/
 data/librispeech/
 data/lrs3/
+data/voxmm_dev_eval/
+data/voxmm_preprocessed/
+voxmm_dev_eval.tar.gz
+voxmm_preprocessed.tar.gz
 external/AVEC/
 tools/parakeet_coreml_bridge/.build/
 tools/parakeet_coreml_bridge/.swiftpm/
