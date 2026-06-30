@@ -408,3 +408,78 @@ the mouth ROI video.
 For now, full LRS3 score reproduction should be treated as an equivalent-source
 attempt, not as an exact reproduction. We still need to check the HF mirror
 split/content and run the preprocessing at scale.
+## VoxMM Finetuning (AVEC)
+
+This adds AVEC finetuning on VoxMM (train) with evaluation on a small LRS-VoxMM
+dev subset. The pipeline assumes the standard AVEC setup above is already done
+(checkout cloned, checkpoints/tokenizer downloaded, `ibug` face packages
+installed).
+
+### Getting the preprocessed data
+
+VoxMM requires downloading the original YouTube videos and running face/lip
+detection, which is slow even on a GPU. To skip this, a preprocessed copy of
+the train data and a small LRS-VoxMM dev eval subset are available:
+
+- `voxmm_preprocessed.tar.gz` (~2.3G) - VoxMM train set, already converted to
+  88x88 grayscale mouth ROI clips + sliced WAVs, with `manifest.csv`
+- `voxmm_dev_eval.tar.gz` (~6M) - 500-utterance LRS-VoxMM dev subset,
+  preprocessed the same way, used for periodic evaluation during finetuning
+
+Download both from the shared Drive link (see team channel), then extract:
+
+```bash
+mkdir -p data/voxmm_preprocessed
+tar -xzf voxmm_preprocessed.tar.gz -C data/voxmm_preprocessed --strip-components=1
+
+mkdir -p data/voxmm_dev_eval
+tar -xzf voxmm_dev_eval.tar.gz -C data/voxmm_dev_eval --strip-components=1
+```
+
+**Path note:** the `manifest.csv` files inside these tarballs may still contain
+the original cluster paths (`/hpcwork/...`) from preprocessing. If
+`team1-asr`/AVEC complains it can't find a `.wav` or `.mp4` file, open the
+relevant `manifest.csv` and either:
+- fix the paths to point at wherever you extracted the data, or
+- find/replace the old base path with your local `data/voxmm_preprocessed`
+  (or `data/voxmm_dev_eval`) path.
+
+### Finetuning config
+
+The finetuning config lives at
+`external/AVEC/configs/VoxMM/EffConfInterCTC_finetune.py`. It:
+
+- loads the pretrained AV checkpoint
+  (`callbacks/LRS23/AV/EffConfInterCTC/checkpoints_swa-equal-60-70.ckpt`)
+  with `strict=True`
+- freezes the visual front-end (ResNet-18 + 3D conv stem) and visual back-end
+  stage 2 (~23% of params), leaving the rest trainable
+- uses `torch.float32` precision (float16 caused NaN losses on this data)
+- uses a `CosineAnnealingScheduler` (300 warmup steps, peak LR 1e-4, 9000
+  total steps, 15 epochs)
+- logs to Weights & Biases (`team1-asr` project) via a monkey-patched
+  `log_step`; you'll need to be logged in (`wandb login`) or set
+  `WANDB_MODE=offline` first
+
+Before running, open the config and update `manifest_train` and
+`manifest_eval` to point at wherever you extracted the two tarballs above.
+
+### Running finetuning
+
+```bash
+cd external/AVEC
+.venv/bin/python3 main.py \
+    -c configs/VoxMM/EffConfInterCTC_finetune.py \
+    --mode training \
+    --eval_period_epoch 1 \
+    --saving_period_epoch 1 \
+    --batch_size_eval 8 \
+    --step_log_period 50
+```
+
+On a single H100 this takes roughly 5-6 hours for the full 15 epochs. Smaller
+or slower GPUs will take longer; you can shorten the run for a smoke test with
+`--steps_per_epoch 10 --eval_steps 5`.
+
+Checkpoints are saved to
+`external/AVEC/callbacks/VoxMM/AV/EffConfInterCTC_finetune/` every epoch.
