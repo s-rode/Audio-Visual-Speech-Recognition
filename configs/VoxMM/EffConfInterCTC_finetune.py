@@ -1,4 +1,5 @@
 import sys
+import os
 sys.path.append("../../")
 
 import nnet
@@ -22,21 +23,22 @@ loss_weights = {
 
 # Paths
 tokenizer_path = "datasets/LRS3/tokenizerbpe256.model"
-pretrained_checkpoint = "callbacks/LRS23/AV/EffConfInterCTC/checkpoints_swa-equal-60-70.ckpt"
-manifest_train = "/hpcwork/ww202463/voxmm_preprocessed/manifest.csv"
-manifest_eval = "/hpcwork/ww202463/team-1-data/lrs_voxmm/manifest_dev_eval_avec_roi/manifest.csv"
-callback_path = "callbacks/VoxMM/AV/EffConfInterCTC_finetune"
+pretrained_checkpoint = os.environ.get("AVEC_PRETRAINED_CHECKPOINT", "callbacks/LRS23/AV/EffConfInterCTC/checkpoints_swa-equal-60-70.ckpt")
+manifest_train = os.environ.get("VOXMM_TRAIN_MANIFEST", "../../data/voxmm_preprocessed/manifest.local.csv")
+manifest_eval = os.environ.get("VOXMM_EVAL_MANIFEST", "../../data/voxmm_dev_eval/manifest.local.csv")
+callback_path = os.environ.get("VOXMM_CALLBACK_PATH", "callbacks/VoxMM/AV/EffConfInterCTC_finetune")
 
 # Beam Search - disabled (no ctcdecode)
 beamsearch = False
 
 # Training
-batch_size = 8
-accumulated_steps = 8  # effective batch = 64
+batch_size = int(os.environ.get("VOXMM_BATCH_SIZE", "8"))
+eval_batch_size = int(os.environ.get("VOXMM_EVAL_BATCH_SIZE", str(batch_size)))
+accumulated_steps = int(os.environ.get("VOXMM_ACCUMULATED_STEPS", "8"))  # effective batch = batch_size * accumulated_steps
 eval_training = False
 precision = torch.float32
 recompute_metrics = True
-epochs = 15
+epochs = int(os.environ.get("VOXMM_EPOCHS", "15"))
 
 # Optimizer defined after model (needs model.parameters())
 
@@ -55,7 +57,7 @@ optimizer = nnet.Adam(
         warmup_steps=300,
         val_max=1e-4,
         val_min=1e-6,
-        end_step=9000,
+        end_step=int(os.environ.get("VOXMM_SCHEDULER_STEPS", "9000")),
     ),
     betas=(0.9, 0.98),
     eps=1e-9,
@@ -87,11 +89,10 @@ print(f"Trainable params: {trainable:,} ({trainable/(frozen+trainable)*100:.1f}%
 
 # W&B logging
 import wandb
-import os
 
 wandb.init(
-    project="team1-asr",
-    name="avec-voxmm-finetune-full",
+    project=os.environ.get("WANDB_PROJECT", "team1-asr"),
+    name=os.environ.get("WANDB_RUN_NAME", "avec-voxmm-finetune-full"),
     config={
         "model": "AudioVisualEfficientConformerInterCTC",
         "pretrained": pretrained_checkpoint,
@@ -101,8 +102,8 @@ wandb.init(
         "batch_size": batch_size,
         "accumulated_steps": accumulated_steps,
         "peak_lr": 1e-4,
-        "warmup_steps": 50,
-        "dataset": "VoxMM-smoke",
+        "warmup_steps": 300,
+        "dataset": os.environ.get("VOXMM_DATASET_NAME", "VoxMM-full-local"),
     }
 )
 
@@ -147,7 +148,7 @@ training_dataset = nnet.datasets.VoxMM(
 )
 
 evaluation_dataset = nnet.datasets.VoxMM(
-    batch_size=batch_size,
+    batch_size=eval_batch_size,
     collate_fn=collate_fn,
     manifest_path=manifest_eval,
     tokenizer_path=tokenizer_path,
