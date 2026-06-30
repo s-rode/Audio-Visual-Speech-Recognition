@@ -423,8 +423,10 @@ the train data and a small LRS-VoxMM dev eval subset are available:
 
 - `voxmm_preprocessed.tar.gz` (~2.3G) - VoxMM train set, already converted to
   88x88 grayscale mouth ROI clips + sliced WAVs, with `manifest.csv`
-- `voxmm_dev_eval.tar.gz` (~6M) - 500-utterance LRS-VoxMM dev subset,
-  preprocessed the same way, used for periodic evaluation during finetuning
+- `voxmm_dev_eval.tar.gz` (~71M) - 500-utterance LRS-VoxMM dev subset,
+  preprocessed the same way, used for periodic evaluation during finetuning.
+  Self-contained (both WAVs and mouth ROI videos included) with relative
+  manifest paths.
 
 Download both from the shared Drive link (see team channel), then extract:
 
