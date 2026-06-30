@@ -446,8 +446,18 @@ relevant `manifest.csv` and either:
 
 ### Finetuning config
 
-The finetuning config lives at
-`external/AVEC/configs/VoxMM/EffConfInterCTC_finetune.py`. It:
+The finetuning config is tracked at `configs/VoxMM/EffConfInterCTC_finetune.py`
+in this repo (not under `external/AVEC/`, since that whole directory is
+gitignored and git would not track a file there even with negation patterns).
+After setting up the AVEC checkout, copy it into place:
+
+```bash
+mkdir -p external/AVEC/configs/VoxMM
+cp configs/VoxMM/EffConfInterCTC_finetune.py external/AVEC/configs/VoxMM/
+```
+
+The config lives there at runtime because AVEC's `main.py` resolves config
+paths and imports relative to its own checkout. It:
 
 - loads the pretrained AV checkpoint
   (`callbacks/LRS23/AV/EffConfInterCTC/checkpoints_swa-equal-60-70.ckpt`)
