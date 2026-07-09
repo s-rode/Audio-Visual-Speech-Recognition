@@ -1,0 +1,32 @@
+experiment_name = "lrs-voxmm-avec-av-finetuned-dev"
+
+[backend]
+kind = "avec"
+model = "avec-voxmm-finetuned-av"
+repo_path = "external/AVEC"
+config_file = "configs/LRS23/AV/EffConfInterCTC.py"
+callback_path = "callbacks/VoxMM/AV/EffConfInterCTC_finetune"
+checkpoint = "checkpoints_epoch_12_step_7201.ckpt"
+modality = "audio_visual"
+language = "en"
+python_executable = "external/AVEC/.venv/bin/python3"
+
+[noise]
+enabled = false
+
+[input]
+manifest_path = "data/lrs_voxmm/dev_avec_roi/manifest.csv"
+audio_column = "audio_path"
+video_column = "video_path"
+reference_column = "reference"
+id_column = "utterance_id"
+language_column = "language"
+video_preprocessing_column = "video_preprocessing"
+
+[output]
+output_dir = "outputs/lrs_voxmm_avec_av_finetuned_dev"
+transcript_name = "transcripts.jsonl"
+metrics_name = "metrics.json"
+
+[wandb]
+enabled = false

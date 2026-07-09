@@ -22,6 +22,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo-path", default="external/AVEC")
     parser.add_argument("--config-file", required=True)
     parser.add_argument("--checkpoint", required=True)
+    parser.add_argument(
+        "--callback-path",
+        default=None,
+        help="Override the AVEC callback directory used to resolve the checkpoint.",
+    )
     parser.add_argument("--modality", choices=sorted(_MODALITIES), required=True)
     parser.add_argument("--model-name", default="AVEC")
     parser.add_argument("--cpu", action="store_true")
@@ -203,11 +208,9 @@ class _AvecTranscriber(_BaseTranscriber):
         torch = self._torch
         torchvision = self._torchvision
         tokenizer_path = "datasets/LRS3/tokenizerbpe256.model"
-        checkpoint_parent = str(Path(self._args.config_file).with_suffix("")).replace(
-            "configs",
-            "callbacks",
-            1,
-        )
+        checkpoint_parent = self._args.callback_path or str(
+            Path(self._args.config_file).with_suffix("")
+        ).replace("configs", "callbacks", 1)
 
         if self._args.modality == "audio":
             model = nnet.AudioEfficientConformerInterCTC(

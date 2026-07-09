@@ -22,6 +22,7 @@ class BackendConfig:
     repo_path: str = "external/AVEC"
     config_file: str = "configs/LRS23/AV/EffConfInterCTC.py"
     checkpoint: str = "checkpoints_swa-equal-60-70.ckpt"
+    callback_path: str | None = None
     modality: str = "audio_visual"
     python_executable: str = "python"
     runner_module: str = "team1_asr.avec_manifest_runner"

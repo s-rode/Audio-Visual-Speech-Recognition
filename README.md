@@ -512,3 +512,119 @@ or slower GPUs will take longer; you can shorten the run for a smoke test with
 
 Checkpoints are saved to
 `external/AVEC/callbacks/VoxMM/AV/EffConfInterCTC_finetune/` every epoch.
+
+## Visual reliability routing
+
+The main reliability baseline decides between Whisper `base.en` audio-only and
+the fine-tuned AVEC audio-visual model. They are reasonably close in size:
+Whisper has around 74M parameters and AVEC-AV around 62M. This still is not a
+perfectly controlled comparison because the models were trained on different
+data, but it is more useful than only comparing AVEC against the much larger
+Parakeet model.
+
+Put the fine-tuned checkpoint here:
+
+```text
+external/AVEC/callbacks/VoxMM/AV/EffConfInterCTC_finetune/<checkpoint-name>.ckpt
+```
+
+Set `checkpoint` in `configs/lrs_voxmm_avec_av_finetuned_dev.toml` to the
+actual filename. The checkpoint stays local and should not be committed.
+
+First build a manifest from the original LRS-VoxMM dev clips and run the mouth
+preprocessing:
+
+```bash
+uv run python scripts/build_lrs_voxmm_dev_manifest.py \
+  /path/to/lrs-voxmm/original/dev \
+  data/lrs_voxmm/manifest_dev.csv
+
+uv run team1-preprocess-avec-video \
+  data/lrs_voxmm/manifest_dev.csv \
+  data/lrs_voxmm/dev_avec_roi \
+  --force
+```
+
+Besides the mouth videos and normal `manifest.csv`, preprocessing now writes
+`visual_reliability.csv`. This contains the RetinaFace detection rate and
+confidence, mouth-landmark confidence, missing-frame statistics, and whether
+the output was only a full-frame fallback.
+
+Run the two models:
+
+```bash
+uv run team1-download-model base.en
+uv run team1-asr configs/lrs_voxmm_whisper_base_dev.toml
+uv run team1-asr configs/lrs_voxmm_avec_av_finetuned_dev.toml
+```
+
+The reliability tool only needs both `transcripts.jsonl` files and joins them
+using `utterance_id`. Parakeet is still available through
+`configs/lrs_voxmm_parakeet_dev.toml` as a larger secondary baseline.
+
+Calibrate the threshold on VoxMM dev:
+
+```bash
+uv run team1-reliability calibrate \
+  --manifest data/lrs_voxmm/manifest_dev.csv \
+  --reliability data/lrs_voxmm/dev_avec_roi/visual_reliability.csv \
+  --audio-transcripts outputs/lrs_voxmm_whisper_base_dev/transcripts.jsonl \
+  --audio-visual-transcripts outputs/lrs_voxmm_avec_av_finetuned_dev/transcripts.jsonl \
+  --audio-system-name whisper_base_en \
+  --av-system-name avec_voxmm_finetuned_av \
+  --output-dir outputs/lrs_voxmm_reliability_dev
+```
+
+This compares audio-only, crop success, face-detection rate, RetinaFace
+confidence, and mouth-landmark confidence. It writes the selected rule to
+`policy.json`, plus the threshold sweep, routing decisions, and WER/CER
+results.
+
+For a new split, use that frozen policy to build the routed manifests:
+
+```bash
+uv run team1-reliability split \
+  --source-manifest data/lrs_voxmm/manifest_test.csv \
+  --roi-manifest data/lrs_voxmm/test_avec_roi/manifest.csv \
+  --reliability data/lrs_voxmm/test_avec_roi/visual_reliability.csv \
+  --policy outputs/lrs_voxmm_reliability_dev/policy.json \
+  --output-dir data/lrs_voxmm/test_routed
+```
+
+This writes `audio_manifest.csv` for the complete audio-only baseline,
+`audio_fallback_manifest.csv` for only the audio-routed rows, and
+`audio_visual_manifest.csv` for AVEC.
+
+For a proper test report, run Whisper on the complete audio manifest and AVEC
+on its routed manifest. Then evaluate the combined predictions with:
+
+```bash
+uv run team1-reliability evaluate \
+  --manifest data/lrs_voxmm/manifest_test.csv \
+  --reliability data/lrs_voxmm/test_avec_roi/visual_reliability.csv \
+  --audio-transcripts outputs/lrs_voxmm_test_routed_whisper/transcripts.jsonl \
+  --audio-visual-transcripts outputs/lrs_voxmm_test_routed_avec/transcripts.jsonl \
+  --policy outputs/lrs_voxmm_reliability_dev/policy.json \
+  --output-dir outputs/lrs_voxmm_reliability_test
+```
+
+The oracle number in the report is only an upper bound calculated from the
+references. It is useful for checking whether routing has potential, but it is
+not used when making the real routing decision.
+
+For a quick local check without VoxMM, use the two LRS3 clips that are already
+part of the local setup:
+
+```bash
+uv run team1-asr configs/lrs3_reliability_whisper_base_smoke.toml
+uv run team1-asr configs/lrs3_reliability_avec_finetuned_smoke.toml
+
+uv run team1-reliability calibrate \
+  --manifest data/lrs3/hf_av_tiny/manifest.csv \
+  --reliability data/lrs3/hf_av_tiny_reliability/visual_reliability.csv \
+  --audio-transcripts outputs/lrs3_reliability_whisper_base_smoke/transcripts.jsonl \
+  --audio-visual-transcripts outputs/lrs3_reliability_avec_finetuned_smoke/transcripts.jsonl \
+  --audio-system-name whisper_base_en \
+  --av-system-name avec_voxmm_finetuned_av \
+  --output-dir outputs/lrs3_reliability_whisper_smoke
+```

@@ -130,6 +130,8 @@ def _bridge_command(config: BackendConfig) -> list[str]:
     )
     if config.device == "cpu":
         command.append("--cpu")
+    if config.callback_path:
+        command.extend(["--callback-path", config.callback_path])
     command.extend(config.extra_args)
     return command
 

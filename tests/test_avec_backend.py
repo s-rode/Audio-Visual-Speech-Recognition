@@ -50,6 +50,7 @@ class AvecBackendTest(unittest.TestCase):
             repo_path="external/AVEC",
             config_file="configs/LRS23/VO/EffConfInterCTC.py",
             checkpoint="checkpoints_swa-equal-90-100.ckpt",
+            callback_path="callbacks/custom/visual",
             modality="visual",
             device="cpu",
             extra_args=["--mock-transcript", "ok"],
@@ -60,6 +61,8 @@ class AvecBackendTest(unittest.TestCase):
         self.assertEqual(command[0], "python")
         self.assertEqual(Path(command[1]).name, "run_avec_manifest.py")
         self.assertIn("--cpu", command)
+        self.assertIn("--callback-path", command)
+        self.assertIn("callbacks/custom/visual", command)
         self.assertEqual(command[-2:], ["--mock-transcript", "ok"])
 
 

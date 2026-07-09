@@ -105,6 +105,7 @@ model = "avec-audio-visual"
 repo_path = "external/AVEC"
 config_file = "configs/LRS23/AV/EffConfInterCTC.py"
 checkpoint = "checkpoints_swa-equal-60-70.ckpt"
+callback_path = "callbacks/VoxMM/AV/EffConfInterCTC_finetune"
 modality = "audio_visual"
 python_executable = ".venv-avec/bin/python"
 extra_args = ["--mock-transcript", "hello"]
@@ -120,6 +121,10 @@ video_column = "mouth_roi_path"
         self.assertEqual(config.backend.kind, "avec")
         self.assertEqual(config.backend.repo_path, "external/AVEC")
         self.assertEqual(config.backend.modality, "audio_visual")
+        self.assertEqual(
+            config.backend.callback_path,
+            "callbacks/VoxMM/AV/EffConfInterCTC_finetune",
+        )
         self.assertEqual(config.backend.python_executable, ".venv-avec/bin/python")
         self.assertEqual(config.backend.extra_args, ["--mock-transcript", "hello"])
         self.assertEqual(config.input.video_column, "mouth_roi_path")

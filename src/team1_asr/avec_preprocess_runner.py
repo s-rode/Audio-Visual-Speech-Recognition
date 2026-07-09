@@ -8,6 +8,12 @@ from pathlib import Path
 import shutil
 import sys
 
+from team1_asr.visual_reliability import (
+    FrameReliability,
+    RELIABILITY_FIELDNAMES,
+    summarize_visual_reliability,
+)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -80,33 +86,78 @@ def preprocess_manifest(
     cropper = _build_cropper(modules["nnet"], repo_path)
 
     output_manifest = output_dir / "manifest.csv"
+    reliability_path = output_dir / "visual_reliability.csv"
+    existing_reliability = (
+        _read_rows(reliability_path)
+        if skip_existing and reliability_path.exists()
+        else []
+    )
+    existing_reliability_by_id = {
+        row["utterance_id"]: row for row in existing_reliability
+    }
     fieldnames = _fieldnames(rows, [id_column, audio_column, video_column, reference_column, language_column, "video_preprocessing"])
-    with output_manifest.open("w", encoding="utf-8", newline="") as handle:
+    with output_manifest.open(
+        "w", encoding="utf-8", newline=""
+    ) as handle, reliability_path.open(
+        "w", encoding="utf-8", newline=""
+    ) as reliability_handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        reliability_writer = csv.DictWriter(
+            reliability_handle,
+            fieldnames=RELIABILITY_FIELDNAMES,
+        )
         writer.writeheader()
+        reliability_writer.writeheader()
         for index, row in enumerate(rows):
             utterance_id = row.get(id_column) or f"utt-{index:05d}"
-            source_video = _resolve_required(row, video_column, manifest_dir, utterance_id)
-            source_audio = _resolve_required(row, audio_column, manifest_dir, utterance_id)
             roi_video = roi_dir / f"{utterance_id}_mouth.mp4"
-            if not roi_video.exists() or not skip_existing:
-                _preprocess_video(
-                    source_video=source_video,
-                    output_video=roi_video,
-                    cropper=cropper,
-                    torch=modules["torch"],
-                    torchvision=modules["torchvision"],
-                )
+            reliability_row = existing_reliability_by_id.get(utterance_id)
+            try:
+                source_video = _resolve_required(row, video_column, manifest_dir, utterance_id)
+                source_audio = _resolve_required(row, audio_column, manifest_dir, utterance_id)
+                if (
+                    reliability_row is None
+                    or reliability_row.get("roi_status")
+                    not in {"success", "fallback_full_frame"}
+                    or not roi_video.exists()
+                    or not skip_existing
+                ):
+                    reliability_row = _preprocess_video(
+                        utterance_id=utterance_id,
+                        source_video=source_video,
+                        output_video=roi_video,
+                        cropper=cropper,
+                        torch=modules["torch"],
+                        torchvision=modules["torchvision"],
+                    )
 
-            out_row = dict(row)
-            out_row[id_column] = utterance_id
-            out_row[audio_column] = os.path.relpath(source_audio, output_dir)
-            out_row[video_column] = os.path.relpath(roi_video, output_dir)
-            out_row["video_preprocessing"] = "avec_mouth_roi"
-            writer.writerow(out_row)
+                out_row = dict(row)
+                out_row[id_column] = utterance_id
+                out_row[audio_column] = os.path.relpath(source_audio, output_dir)
+                out_row[video_column] = os.path.relpath(roi_video, output_dir)
+                out_row["video_preprocessing"] = "avec_mouth_roi"
+                writer.writerow(out_row)
+            except Exception as exc:
+                observations = (
+                    exc.observations
+                    if isinstance(exc, _VideoPreprocessingError)
+                    else []
+                )
+                reliability_row = summarize_visual_reliability(
+                    utterance_id,
+                    observations,
+                    roi_status="error",
+                    fallback_used=False,
+                    failure_reason=str(exc),
+                    detector_model=_detector_model(cropper),
+                    detector_threshold=_detector_threshold(cropper),
+                )
+                print(f"Failed to preprocess {utterance_id}: {exc}", file=sys.stderr)
+            reliability_writer.writerow(reliability_row)
 
     print(f"Wrote AVEC mouth ROI videos: {roi_dir}")
     print(f"Wrote preprocessed manifest: {output_manifest}")
+    print(f"Wrote visual reliability metadata: {reliability_path}")
 
 
 def _load_avec_modules(repo_path: Path) -> dict[str, object]:
@@ -138,21 +189,96 @@ def _build_cropper(nnet, repo_path: Path):
     return cropper
 
 
-def _preprocess_video(source_video: Path, output_video: Path, cropper, torch, torchvision) -> None:
+def _preprocess_video(
+    utterance_id: str,
+    source_video: Path,
+    output_video: Path,
+    cropper,
+    torch,
+    torchvision,
+) -> dict[str, object]:
     video, fps = _read_video(source_video, torch)
-    landmarks = cropper.detect_landmarks(video)
-    landmarks = cropper.landmarks_interpolate(landmarks)
-    if not landmarks:
-        roi = torchvision.transforms.functional.resize(
-            video.permute(3, 0, 1, 2),
-            size=(cropper.crop_height, cropper.crop_width),
-        ).permute(1, 2, 3, 0)
-        roi = roi.numpy()
-    else:
-        roi = cropper.crop_patch(video.numpy(), landmarks)
-    if roi is None or len(roi) == 0:
-        raise RuntimeError(f"Failed to produce mouth ROI video for {source_video}")
-    _write_video(output_video, roi, fps=fps)
+    landmarks, observations = _detect_landmarks(video, cropper)
+    try:
+        landmarks = cropper.landmarks_interpolate(landmarks)
+        fallback_used = not landmarks
+        if not landmarks:
+            roi = torchvision.transforms.functional.resize(
+                video.permute(3, 0, 1, 2),
+                size=(cropper.crop_height, cropper.crop_width),
+            ).permute(1, 2, 3, 0)
+            roi = roi.numpy()
+        else:
+            roi = cropper.crop_patch(video.numpy(), landmarks)
+        if roi is None or len(roi) == 0:
+            raise RuntimeError(f"Failed to produce mouth ROI video for {source_video}")
+        _write_video(output_video, roi, fps=fps)
+    except Exception as exc:
+        raise _VideoPreprocessingError(str(exc), observations) from exc
+    return summarize_visual_reliability(
+        utterance_id,
+        observations,
+        roi_status="fallback_full_frame" if fallback_used else "success",
+        fallback_used=fallback_used,
+        failure_reason="no landmarks detected" if fallback_used else "",
+        detector_model=_detector_model(cropper),
+        detector_threshold=_detector_threshold(cropper),
+    )
+
+
+def _detect_landmarks(video, cropper):
+    observations: list[FrameReliability] = []
+    landmarks = []
+    for frame in video:
+        frame_array = frame.numpy()
+        detected_faces = cropper.face_detector(frame_array, rgb=True)
+        face_count = len(detected_faces)
+        face_confidence = (
+            float(detected_faces[0][4])
+            if face_count and len(detected_faces[0]) > 4
+            else None
+        )
+        detected_landmarks, scores = cropper.landmark_detector(
+            frame_array,
+            detected_faces,
+            rgb=True,
+        )
+        if len(detected_landmarks) > 0:
+            landmarks.append(detected_landmarks[0])
+            mouth_scores = scores[0][cropper.start_idx:cropper.stop_idx]
+            mouth_confidence = (
+                float(mouth_scores.mean()) if len(mouth_scores) else None
+            )
+        else:
+            landmarks.append(None)
+            mouth_confidence = None
+        observations.append(
+            FrameReliability(
+                face_count=face_count,
+                face_confidence=face_confidence,
+                mouth_landmark_confidence=mouth_confidence,
+            )
+        )
+    return landmarks, observations
+
+
+def _detector_model(cropper) -> str:
+    return str(getattr(cropper, "_team1_detector_model", "resnet50"))
+
+
+def _detector_threshold(cropper) -> float:
+    detector = getattr(cropper, "face_detector", None)
+    return float(getattr(detector, "threshold", 0.8))
+
+
+class _VideoPreprocessingError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        observations: list[FrameReliability],
+    ) -> None:
+        super().__init__(message)
+        self.observations = observations
 
 
 def _read_video(path: Path, torch):
