@@ -14,7 +14,7 @@ python_executable = "external/AVEC/.venv/bin/python3"
 enabled = false
 
 [input]
-manifest_path = "data/lrs_voxmm/smoke_manifest.csv"
+manifest_path = "data/lrs_voxmm/manifest_dev_smoke.csv"
 audio_column = "audio_path"
 video_column = "video_path"
 reference_column = "reference"

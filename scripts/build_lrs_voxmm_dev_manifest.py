@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import wave
 from pathlib import Path
 
 
@@ -13,6 +14,12 @@ def build_parser():
     parser.add_argument("dev_dir", help="Path to lrs-voxmm/original/dev")
     parser.add_argument("output_csv", help="Output manifest CSV path")
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--min-duration-sec",
+        type=float,
+        default=0.0,
+        help="Skip utterances shorter than this many seconds, based on the wav file.",
+    )
     return parser
 
 
@@ -31,6 +38,9 @@ def main():
             wav_path = video_dir / f"{utt_id_suffix}.wav"
             mp4_path = video_dir / f"{utt_id_suffix}.mp4"
             if not (wav_path.exists() and mp4_path.exists()):
+                continue
+            duration_sec = _wav_duration_sec(wav_path)
+            if duration_sec < args.min_duration_sec:
                 continue
             lines = txt_path.read_text().splitlines()
             text = lines[0].strip() if lines else ""
@@ -55,6 +65,14 @@ def main():
         writer.writerows(rows)
 
     print(f"Wrote {len(rows)} utterances to {output_csv}")
+
+
+def _wav_duration_sec(path: Path) -> float:
+    with wave.open(str(path), "rb") as wav:
+        sample_rate = wav.getframerate()
+        if sample_rate <= 0:
+            return 0.0
+        return wav.getnframes() / sample_rate
 
 
 if __name__ == "__main__":

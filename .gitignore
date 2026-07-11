@@ -10,6 +10,8 @@ outputs/
 wandb/
 data/librispeech/
 data/lrs3/
+data/lrs_voxmm/
+data/voxmm/
 data/voxmm_dev_eval/
 data/voxmm_preprocessed/
 voxmm_dev_eval.tar.gz

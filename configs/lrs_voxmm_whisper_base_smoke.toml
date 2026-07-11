@@ -1,0 +1,32 @@
+experiment_name = "lrs-voxmm-whisper-base-en-smoke"
+
+[backend]
+kind = "faster-whisper"
+model = "base.en"
+device = "cpu"
+compute_type = "int8"
+beam_size = 1
+best_of = 1
+language = "en"
+task = "transcribe"
+word_timestamps = false
+vad_filter = false
+condition_on_previous_text = false
+
+[noise]
+enabled = false
+
+[input]
+manifest_path = "data/lrs_voxmm/manifest_dev_smoke.csv"
+audio_column = "audio_path"
+reference_column = "reference"
+id_column = "utterance_id"
+language_column = "language"
+
+[output]
+output_dir = "outputs/lrs_voxmm_whisper_base_smoke"
+transcript_name = "transcripts.jsonl"
+metrics_name = "metrics.json"
+
+[wandb]
+enabled = false

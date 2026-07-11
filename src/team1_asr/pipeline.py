@@ -67,20 +67,30 @@ def _run_experiment(
                     output_dir,
                     utterance_id=row.utterance_id,
                 )
-                transcript = backend.transcribe(
-                    TranscriptionRequest(
-                        audio_path=prepared_audio_path,
-                        language=row.language,
-                        utterance_id=row.utterance_id,
-                        video_path=row.video_path,
-                        reference=row.reference,
-                        video_preprocessing=(
-                            str(row.metadata["video_preprocessing"])
-                            if row.metadata and "video_preprocessing" in row.metadata
-                            else None
-                        ),
+                try:
+                    transcript = backend.transcribe(
+                        TranscriptionRequest(
+                            audio_path=prepared_audio_path,
+                            language=row.language,
+                            utterance_id=row.utterance_id,
+                            video_path=row.video_path,
+                            reference=row.reference,
+                            video_preprocessing=(
+                                str(row.metadata["video_preprocessing"])
+                                if row.metadata and "video_preprocessing" in row.metadata
+                                else None
+                            ),
+                        )
                     )
-                )
+                except Exception as exc:
+                    if not config.backend.skip_transcription_errors:
+                        raise
+                    _show_progress(
+                        progress,
+                        progress_handle,
+                        f"Skipping {row.utterance_id} after backend error: {exc}",
+                    )
+                    continue
                 handle.write(
                     json.dumps(
                         _serialize_transcript(
@@ -119,6 +129,7 @@ def _run_experiment(
         "reverb_enabled": config.noise.reverb.enabled,
         "bandwidth_enabled": config.noise.bandwidth.enabled,
         "utterances_scored": metrics.utterances_scored,
+        "utterances_failed": len(rows) - metrics.utterances_scored,
         "wer": metrics.wer,
         "cer": metrics.cer,
         "raw_wer": metrics.raw_wer,

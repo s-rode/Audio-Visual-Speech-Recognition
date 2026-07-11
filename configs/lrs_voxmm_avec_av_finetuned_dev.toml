@@ -10,6 +10,7 @@ checkpoint = "checkpoints_epoch_12_step_7201.ckpt"
 modality = "audio_visual"
 language = "en"
 python_executable = "external/AVEC/.venv/bin/python3"
+skip_transcription_errors = true
 
 [noise]
 enabled = false

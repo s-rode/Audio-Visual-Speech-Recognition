@@ -27,6 +27,7 @@ class BackendConfig:
     python_executable: str = "python"
     runner_module: str = "team1_asr.avec_manifest_runner"
     extra_args: list[str] = field(default_factory=list)
+    skip_transcription_errors: bool = False
 
 
 @dataclass
