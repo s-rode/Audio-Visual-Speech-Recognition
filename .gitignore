@@ -15,6 +15,13 @@ data/voxmm_preprocessed/
 voxmm_dev_eval.tar.gz
 voxmm_preprocessed.tar.gz
 external/AVEC/
+external/MMS-LLaMA/
+external/.cache/
+external/.home/
+external/.tmp/
+external/.uv-cache/
+external/assets/
+external/src/
 tools/parakeet_coreml_bridge/.build/
 tools/parakeet_coreml_bridge/.swiftpm/
 tools/parakeet_coreml_bridge/Packages/
