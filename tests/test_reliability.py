@@ -6,7 +6,12 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from team1_asr.reliability import calibrate, evaluate, split_manifests
+from team1_asr.reliability import (
+    calibrate,
+    diagnose_failures,
+    evaluate,
+    split_manifests,
+)
 
 
 class ReliabilityTest(unittest.TestCase):
@@ -39,6 +44,9 @@ class ReliabilityTest(unittest.TestCase):
             )
             self.assertEqual(metrics["routed_to_audio_visual_count"], 1)
             self.assertEqual(metrics["preprocessing_failure_count"], 1)
+            self.assertIn("missed_audio_visual_wins", metrics)
+            self.assertIn("false_audio_visual_routes", metrics)
+            self.assertIn("oracle_gap_wer", metrics)
             self.assertTrue((output_dir / "threshold_sweep.csv").exists())
             self.assertTrue((output_dir / "routing_decisions.csv").exists())
 
@@ -233,6 +241,84 @@ class ReliabilityTest(unittest.TestCase):
             self.assertIn("audio_prediction", decisions[0])
             self.assertIn("audio_visual_prediction", decisions[0])
 
+    def test_diagnoses_missing_audio_visual_predictions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            paths = _write_fixture(root)
+            _write_jsonl(
+                paths["av"],
+                [
+                    {"utterance_id": "u1", "prediction": "hello world"},
+                ],
+            )
+
+            summary = diagnose_failures(
+                paths["manifest"],
+                paths["reliability"],
+                paths["av"],
+                root / "diagnostics",
+            )
+            with (root / "diagnostics" / "avec_failure_diagnostics.csv").open() as handle:
+                rows = list(csv.DictReader(handle))
+
+            self.assertEqual(summary["audio_visual_success_count"], 1)
+            self.assertEqual(summary["audio_visual_failure_count"], 2)
+            self.assertEqual(rows[0]["status"], "success")
+            self.assertEqual(rows[1]["status"], "failed")
+            self.assertTrue(
+                (root / "diagnostics" / "avec_failure_summary.json").exists()
+            )
+
+    def test_calibrates_lower_is_better_multiple_face_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = root / "manifest.csv"
+            manifest.write_text(
+                "utterance_id,audio_path,video_path,reference,language\n"
+                "u1,audio/u1.wav,raw/u1.mp4,hello world,en\n"
+                "u2,audio/u2.wav,raw/u2.mp4,good day,en\n"
+            )
+            reliability = root / "visual_reliability.csv"
+            reliability.write_text(
+                "utterance_id,roi_status,fallback_used,face_detection_rate,"
+                "retinaface_confidence_mean,retinaface_confidence_p10,"
+                "mouth_landmark_confidence_mean,mouth_landmark_confidence_p10,"
+                "multiple_face_rate\n"
+                "u1,success,false,1.0,0.9,0.9,0.8,0.8,0.0\n"
+                "u2,success,false,1.0,0.9,0.9,0.8,0.8,0.5\n"
+            )
+            audio = root / "audio.jsonl"
+            _write_jsonl(
+                audio,
+                [
+                    {"utterance_id": "u1", "prediction": "wrong wrong"},
+                    {"utterance_id": "u2", "prediction": "good day"},
+                ],
+            )
+            av = root / "av.jsonl"
+            _write_jsonl(
+                av,
+                [
+                    {"utterance_id": "u1", "prediction": "hello world"},
+                    {"utterance_id": "u2", "prediction": "bad bad"},
+                ],
+            )
+
+            policy = calibrate(
+                manifest,
+                reliability,
+                audio,
+                av,
+                root / "calibration",
+            )
+
+            self.assertEqual(policy["policy_type"], "threshold")
+            self.assertEqual(policy["feature"], "multiple_face_rate")
+            self.assertEqual(policy["direction"], "lower")
+            self.assertEqual(policy["threshold"], 0.0)
+            metrics = json.loads((root / "calibration" / "metrics.json").read_text())
+            self.assertEqual(metrics["routed"]["wer"], 0.0)
+
 
 def _write_fixture(root: Path) -> dict[str, Path]:
     manifest = root / "manifest.csv"
@@ -252,10 +338,12 @@ def _write_fixture(root: Path) -> dict[str, Path]:
     reliability = root / "visual_reliability.csv"
     reliability.write_text(
         "utterance_id,roi_status,fallback_used,face_detection_rate,"
-        "retinaface_confidence_mean,mouth_landmark_confidence_mean\n"
-        "u1,success,false,0.9,0.9,0.8\n"
-        "u2,success,false,0.2,0.8,0.7\n"
-        "u3,fallback_full_frame,true,0.0,,\n"
+        "retinaface_confidence_mean,retinaface_confidence_p10,"
+        "mouth_landmark_confidence_mean,mouth_landmark_confidence_p10,"
+        "multiple_face_rate\n"
+        "u1,success,false,0.9,0.9,0.8,0.8,0.7,0.0\n"
+        "u2,success,false,0.2,0.8,0.7,0.7,0.6,0.2\n"
+        "u3,fallback_full_frame,true,0.0,,,,,\n"
     )
     audio = root / "audio.jsonl"
     _write_jsonl(

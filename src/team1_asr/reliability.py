@@ -4,7 +4,9 @@ import argparse
 import csv
 import json
 from pathlib import Path
+import statistics
 import unicodedata
+import wave
 
 from team1_asr.evaluation import compute_metrics
 from team1_asr.visual_reliability import (
@@ -14,9 +16,12 @@ from team1_asr.visual_reliability import (
 
 
 POLICY_FEATURES = [
-    ("face_detection_rate", 1),
-    ("retinaface_confidence_mean", 2),
-    ("mouth_landmark_confidence_mean", 3),
+    ("face_detection_rate", 1, "higher"),
+    ("retinaface_confidence_mean", 2, "higher"),
+    ("retinaface_confidence_p10", 3, "higher"),
+    ("mouth_landmark_confidence_mean", 4, "higher"),
+    ("mouth_landmark_confidence_p10", 5, "higher"),
+    ("multiple_face_rate", 6, "lower"),
 ]
 DEFAULT_AUDIO_SYSTEM = "audio"
 DEFAULT_AV_SYSTEM = "audio_visual"
@@ -42,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     evaluate = subparsers.add_parser("evaluate")
     _add_evaluation_inputs(evaluate, require_policy=True)
+
+    diagnose = subparsers.add_parser("diagnose-failures")
+    diagnose.add_argument("--manifest", required=True)
+    diagnose.add_argument("--reliability", required=True)
+    diagnose.add_argument("--audio-visual-transcripts", "--av-transcripts", dest="av_transcripts", required=True)
+    diagnose.add_argument("--output-dir", required=True)
     return parser
 
 
@@ -84,13 +95,20 @@ def main() -> None:
             policy_path=Path(args.policy),
             output_dir=Path(args.output_dir),
         )
-    else:
+    elif args.command == "evaluate":
         evaluate(
             manifest_path=Path(args.manifest),
             reliability_path=Path(args.reliability),
             audio_transcripts_path=Path(args.audio_transcripts),
             av_transcripts_path=Path(args.av_transcripts),
             policy_path=Path(args.policy),
+            output_dir=Path(args.output_dir),
+        )
+    else:
+        diagnose_failures(
+            manifest_path=Path(args.manifest),
+            reliability_path=Path(args.reliability),
+            av_transcripts_path=Path(args.av_transcripts),
             output_dir=Path(args.output_dir),
         )
 
@@ -117,7 +135,7 @@ def calibrate(
     )
     sweep: list[dict[str, object]] = []
     candidates = [_policy("roi_success", None, None, priority=0)]
-    for feature, priority in POLICY_FEATURES:
+    for feature, priority, direction in POLICY_FEATURES:
         values = sorted(
             {
                 value
@@ -129,7 +147,13 @@ def calibrate(
         )
         for threshold in values:
             candidates.append(
-                _policy("threshold", feature, threshold, priority=priority)
+                _policy(
+                    "threshold",
+                    feature,
+                    threshold,
+                    priority=priority,
+                    direction=direction,
+                )
             )
     candidates.append(_policy("audio_only", None, None, priority=4))
 
@@ -140,6 +164,7 @@ def calibrate(
         sweep_row = {
             "policy_type": policy["policy_type"],
             "feature": policy.get("feature") or "",
+            "direction": policy.get("direction") or "",
             "threshold": "" if threshold is None else threshold,
             "word_errors": result["total_word_errors"],
             "reference_words": result["total_reference_words"],
@@ -197,6 +222,46 @@ def evaluate(
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     return _write_reports(inputs, policy, output_dir)
+
+
+def diagnose_failures(
+    manifest_path: Path,
+    reliability_path: Path,
+    av_transcripts_path: Path,
+    output_dir: Path,
+) -> dict[str, object]:
+    rows = _read_csv_by_id(manifest_path)
+    reliability = _read_csv_by_id(reliability_path)
+    av = _read_transcripts(av_transcripts_path)
+    diagnostics = [
+        _diagnostic_row(
+            utterance_id=utterance_id,
+            manifest_row=row,
+            reliability_row=reliability.get(utterance_id, {}),
+            manifest_path=manifest_path,
+            status="success" if utterance_id in av else "failed",
+        )
+        for utterance_id, row in rows.items()
+    ]
+    summary = {
+        "num_utterances": len(diagnostics),
+        "audio_visual_success_count": sum(
+            row["status"] == "success" for row in diagnostics
+        ),
+        "audio_visual_failure_count": sum(
+            row["status"] == "failed" for row in diagnostics
+        ),
+        "groups": {
+            status: _diagnostic_summary(
+                [row for row in diagnostics if row["status"] == status]
+            )
+            for status in ("success", "failed")
+        },
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _write_csv(output_dir / "avec_failure_diagnostics.csv", diagnostics)
+    _write_json(output_dir / "avec_failure_summary.json", summary)
+    return summary
 
 
 def split_manifests(
@@ -293,6 +358,8 @@ def _route(
     audio_visual_selected = 0
     routing_correct = 0
     scored_decisions = 0
+    missed_audio_visual_wins = 0
+    false_audio_visual_routes = 0
 
     for utterance_id, row in rows.items():
         reference = row.get("reference", "")
@@ -326,6 +393,10 @@ def _route(
             if av_errors is not None and av_errors < audio_errors
             else audio_system
         )
+        if reference and oracle_system == av_system and selected_system != av_system:
+            missed_audio_visual_wins += 1
+        if reference and selected_system == av_system and oracle_system != av_system:
+            false_audio_visual_routes += 1
         oracle_prediction = (
             av_prediction if oracle_system == av_system else audio_prediction
         )
@@ -349,6 +420,7 @@ def _route(
                 "utterance_id": utterance_id,
                 "policy_type": policy["policy_type"],
                 "feature": feature or "",
+                "direction": _policy_direction(policy),
                 "reliability_score": (
                     reliability_row.get(str(feature), "") if feature else ""
                 ),
@@ -377,6 +449,8 @@ def _route(
         is_real_mouth_roi(reliability.get(item, {})) for item in ordered_ids
     )
 
+    routed_metrics = _metrics_dict(references, routed)
+    oracle_metrics = _metrics_dict(references, oracle)
     metrics = {
         "num_utterances": len(ordered_ids),
         "policy": policy,
@@ -390,12 +464,16 @@ def _route(
             **_metrics_dict(av_references, av_predictions),
             "coverage": len(av_ids) / len(ordered_ids) if ordered_ids else 0.0,
         },
-        "routed": _metrics_dict(references, routed),
-        "oracle": _metrics_dict(references, oracle),
+        "routed": routed_metrics,
+        "oracle": oracle_metrics,
+        "oracle_gap_wer": _metric_gap(routed_metrics, oracle_metrics, "wer"),
+        "oracle_gap_cer": _metric_gap(routed_metrics, oracle_metrics, "cer"),
         "routed_to_audio_visual_count": audio_visual_selected,
         "routed_to_audio_visual_rate": (
             audio_visual_selected / len(ordered_ids) if ordered_ids else 0.0
         ),
+        "missed_audio_visual_wins": missed_audio_visual_wins,
+        "false_audio_visual_routes": false_audio_visual_routes,
         "routing_accuracy": (
             routing_correct / scored_decisions if scored_decisions else None
         ),
@@ -421,11 +499,13 @@ def _policy(
     threshold: float | None,
     *,
     priority: int,
+    direction: str = "higher",
 ) -> dict[str, object]:
     return {
         "policy_type": policy_type,
         "feature": feature,
         "threshold": threshold,
+        "direction": direction,
         "priority": priority,
     }
 
@@ -443,7 +523,11 @@ def _policy_selects_av(
     feature = str(policy.get("feature") or "")
     threshold = optional_float(policy.get("threshold"))
     value = optional_float(reliability_row.get(feature))
-    return value is not None and threshold is not None and value >= threshold
+    if value is None or threshold is None:
+        return False
+    if _policy_direction(policy) == "lower":
+        return value <= threshold
+    return value >= threshold
 
 
 def _validate_policy(policy: dict[str, object]) -> None:
@@ -458,6 +542,14 @@ def _validate_policy(policy: dict[str, object]) -> None:
         raise ValueError(f"Unsupported reliability feature: {policy.get('feature')}")
     if optional_float(policy.get("threshold")) is None:
         raise ValueError("Threshold reliability policy has no numeric threshold.")
+    _policy_direction(policy)
+
+
+def _policy_direction(policy: dict[str, object]) -> str:
+    direction = str(policy.get("direction") or "higher")
+    if direction not in {"higher", "lower"}:
+        raise ValueError(f"Unsupported reliability threshold direction: {direction}")
+    return direction
 
 
 def _policy_audio_system(policy: dict[str, object]) -> str:
@@ -498,6 +590,18 @@ def _metrics_dict(references: list[str], predictions: list[str]) -> dict[str, ob
         "raw_wer": metrics.raw_wer,
         "raw_cer": metrics.raw_cer,
     }
+
+
+def _metric_gap(
+    baseline: dict[str, object],
+    upper_bound: dict[str, object],
+    name: str,
+) -> float | None:
+    baseline_value = baseline.get(name)
+    upper_bound_value = upper_bound.get(name)
+    if baseline_value is None or upper_bound_value is None:
+        return None
+    return float(baseline_value) - float(upper_bound_value)
 
 
 def _word_error_stats(reference: str, prediction: str) -> tuple[int, int]:
@@ -559,6 +663,109 @@ def _read_transcripts(path: Path) -> dict[str, dict[str, str]]:
                 "prediction": str(record.get("prediction") or ""),
             }
     return transcripts
+
+
+def _diagnostic_row(
+    utterance_id: str,
+    manifest_row: dict[str, str],
+    reliability_row: dict[str, str],
+    manifest_path: Path,
+    status: str,
+) -> dict[str, object]:
+    reference = manifest_row.get("reference", "")
+    word_count = len(_normalize_words(reference))
+    audio_path = _resolve_manifest_path(manifest_row.get("audio_path", ""), manifest_path)
+    duration = _wav_duration_sec(audio_path)
+    words_per_second = (
+        word_count / duration if isinstance(duration, float) and duration > 0 else ""
+    )
+    return {
+        "utterance_id": utterance_id,
+        "status": status,
+        "audio_path": audio_path,
+        "video_path": _resolve_manifest_path(manifest_row.get("video_path", ""), manifest_path),
+        "reference": reference,
+        "word_count": word_count,
+        "audio_duration": duration,
+        "words_per_second": words_per_second,
+        "roi_status": reliability_row.get("roi_status", ""),
+        "face_detection_rate": reliability_row.get("face_detection_rate", ""),
+        "retinaface_confidence_mean": reliability_row.get("retinaface_confidence_mean", ""),
+        "retinaface_confidence_p10": reliability_row.get("retinaface_confidence_p10", ""),
+        "mouth_landmark_confidence_mean": reliability_row.get("mouth_landmark_confidence_mean", ""),
+        "mouth_landmark_confidence_p10": reliability_row.get("mouth_landmark_confidence_p10", ""),
+        "multiple_face_rate": reliability_row.get("multiple_face_rate", ""),
+    }
+
+
+def _diagnostic_summary(rows: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "count": len(rows),
+        "word_count": _numeric_summary(rows, "word_count"),
+        "audio_duration": _numeric_summary(rows, "audio_duration"),
+        "words_per_second": _numeric_summary(rows, "words_per_second"),
+        "face_detection_rate": _numeric_summary(rows, "face_detection_rate"),
+        "retinaface_confidence_mean": _numeric_summary(
+            rows,
+            "retinaface_confidence_mean",
+        ),
+        "retinaface_confidence_p10": _numeric_summary(
+            rows,
+            "retinaface_confidence_p10",
+        ),
+        "mouth_landmark_confidence_mean": _numeric_summary(
+            rows,
+            "mouth_landmark_confidence_mean",
+        ),
+        "mouth_landmark_confidence_p10": _numeric_summary(
+            rows,
+            "mouth_landmark_confidence_p10",
+        ),
+        "multiple_face_rate": _numeric_summary(rows, "multiple_face_rate"),
+    }
+
+
+def _numeric_summary(
+    rows: list[dict[str, object]],
+    field: str,
+) -> dict[str, float | int | None]:
+    values = [
+        value
+        for row in rows
+        for value in [optional_float(row.get(field))]
+        if value is not None
+    ]
+    if not values:
+        return {"count": 0, "mean": None, "median": None, "min": None, "max": None}
+    return {
+        "count": len(values),
+        "mean": sum(values) / len(values),
+        "median": statistics.median(values),
+        "min": min(values),
+        "max": max(values),
+    }
+
+
+def _resolve_manifest_path(value: str, manifest_path: Path) -> str:
+    if not value:
+        return ""
+    path = Path(value)
+    if path.is_absolute():
+        return str(path)
+    return str((manifest_path.parent / path).resolve())
+
+
+def _wav_duration_sec(path: str) -> float | str:
+    if not path:
+        return ""
+    try:
+        with wave.open(path, "rb") as handle:
+            sample_rate = handle.getframerate()
+            if sample_rate <= 0:
+                return ""
+            return handle.getnframes() / sample_rate
+    except (OSError, EOFError, wave.Error):
+        return ""
 
 
 def _absolutize_manifest_row(

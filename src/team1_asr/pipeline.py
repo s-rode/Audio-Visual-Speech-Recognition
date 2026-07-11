@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import asdict
 import json
 import sys
 from typing import TextIO
+import wave
 
 from team1_asr.backends.base import TranscriptionRequest
 from team1_asr.backends.factory import create_backend
@@ -50,9 +52,11 @@ def _run_experiment(
     backend = create_backend(config.backend)
     _show_progress(progress, progress_handle, "Backend ready")
     transcript_path = output_dir / config.output.transcript_name
+    failure_path = output_dir / "failed_utterances.csv"
 
     references: list[str] = []
     predictions: list[str] = []
+    failure_rows: list[dict[str, object]] = []
     try:
         with transcript_path.open("w", encoding="utf-8") as handle:
             for index, row in enumerate(rows, start=1):
@@ -90,6 +94,13 @@ def _run_experiment(
                         progress_handle,
                         f"Skipping {row.utterance_id} after backend error: {exc}",
                     )
+                    failure_rows.append(
+                        _failure_row(
+                            row=row,
+                            prepared_audio_path=prepared_audio_path,
+                            error=exc,
+                        )
+                    )
                     continue
                 handle.write(
                     json.dumps(
@@ -113,6 +124,8 @@ def _run_experiment(
         close = getattr(backend, "close", None)
         if close is not None:
             close()
+    if config.backend.skip_transcription_errors:
+        _write_failure_report(failure_path, failure_rows)
 
     metrics = compute_metrics(references, predictions)
     summary = {
@@ -169,6 +182,53 @@ def _summary_snr(config) -> float | None:
     if config.enabled:
         return config.snr_db
     return None
+
+
+def _failure_row(row, prepared_audio_path: str, error: Exception) -> dict[str, object]:
+    return {
+        "utterance_id": row.utterance_id,
+        "audio_path": row.audio_path,
+        "used_audio_path": prepared_audio_path,
+        "video_path": row.video_path or "",
+        "reference": row.reference or "",
+        "language": row.language or "",
+        "video_preprocessing": (
+            str(row.metadata["video_preprocessing"])
+            if row.metadata and "video_preprocessing" in row.metadata
+            else ""
+        ),
+        "audio_duration": _wav_duration_sec(prepared_audio_path),
+        "error_message": str(error),
+    }
+
+
+def _write_failure_report(path, rows: list[dict[str, object]]) -> None:
+    fieldnames = [
+        "utterance_id",
+        "audio_path",
+        "used_audio_path",
+        "video_path",
+        "reference",
+        "language",
+        "video_preprocessing",
+        "audio_duration",
+        "error_message",
+    ]
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _wav_duration_sec(path: str) -> float | str:
+    try:
+        with wave.open(path, "rb") as handle:
+            sample_rate = handle.getframerate()
+            if sample_rate <= 0:
+                return ""
+            return handle.getnframes() / sample_rate
+    except (OSError, EOFError, wave.Error):
+        return ""
 
 
 def _serialize_transcript(
