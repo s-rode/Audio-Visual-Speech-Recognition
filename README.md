@@ -324,9 +324,9 @@ uv run team1-preprocess-avec-video \
 ```
 
 This command calls `external/AVEC/.venv/bin/python3` internally and reuses
-AVEC's `LipDetectCrop` with `media/20words_mean_face.npy`. For this to work,
-the AVEC environment needs the `ibug.face_detection` and `ibug.face_alignment`
-packages. I used the same repos that AVEC links in its README:
+AVEC's `LipDetectCrop` with `media/20words_mean_face.npy`. The AVEC environment
+also needs the `ibug.face_detection` and `ibug.face_alignment` packages, using
+the repositories linked from the AVEC README:
 
 ```bash
 cd external/AVEC
@@ -352,15 +352,15 @@ Download `Resnet50_Final.pth` and place it at:
 external/AVEC/external_deps/face_detection/ibug/face_detection/retina_face/weights/Resnet50_Final.pth
 ```
 
-These weights are only needed locally for preprocessing. Do not commit them. The
-project ignores `external/AVEC/`, `data/lrs3/`, and `outputs/`, so the AVEC
-checkout, generated mouth ROI videos, and run outputs stay local.
+The preprocessing command uses these RetinaFace weights to detect and align the
+face before cropping the mouth ROI.
 
 ## AVEC Workflow
 
-AVEC is kept as an editable external checkout. This is useful because we can run
-their pretrained models now, but still change or fine-tune the model later
-without rewriting the rest of our ASR/noise/metrics pipeline.
+AVEC is integrated through an external checkout. The experiment pipeline uses
+the same manifests, noise transforms, transcript format, and WER/CER evaluation
+as the other backends. The checkout can also be modified or fine-tuned directly
+when needed.
 
 Initial setup:
 
@@ -372,8 +372,8 @@ python download_checkpoints_and_tokenizers.py
 ```
 
 The official AVEC configs expect checkpoints and tokenizers in AVEC's own folder
-layout. If something breaks, it is worth checking the AVEC checkout directly
-first:
+layout. These commands are useful to verify that the original AVEC setup works
+before running it through this repository:
 
 ```bash
 cd external/AVEC
@@ -405,15 +405,13 @@ and writes the same `transcripts.jsonl` / `metrics.json` format as the other
 backends. For visual-only and audio-visual runs, `video_path` should point to
 the mouth ROI video.
 
-For now, full LRS3 score reproduction should be treated as an equivalent-source
-attempt, not as an exact reproduction. We still need to check the HF mirror
-split/content and run the preprocessing at scale.
+The Hugging Face LRS3 mirror currently provides a practical development source.
+It is not yet an exact replacement for the official LRS3 benchmark split.
 ## VoxMM Finetuning (AVEC)
 
-This adds AVEC finetuning on VoxMM (train) with evaluation on a small LRS-VoxMM
-dev subset. The pipeline assumes the standard AVEC setup above is already done
-(checkout cloned, checkpoints/tokenizer downloaded, `ibug` face packages
-installed).
+AVEC was fine-tuned on VoxMM train data and evaluated on a small LRS-VoxMM dev
+subset. This uses the normal AVEC setup above, including the checkpoint,
+tokenizer, and face-processing dependencies.
 
 ### Getting the preprocessed data
 
@@ -438,21 +436,15 @@ mkdir -p data/voxmm_dev_eval
 tar -xzf voxmm_dev_eval.tar.gz -C data/voxmm_dev_eval --strip-components=1
 ```
 
-**Path note:** the `manifest.csv` files inside these tarballs may still contain
-the original cluster paths (`/hpcwork/...`) from preprocessing. If
-`team1-asr`/AVEC complains it can't find a `.wav` or `.mp4` file, open the
-relevant `manifest.csv` and either:
-- fix the paths to point at wherever you extracted the data, or
-- find/replace the old base path with your local `data/voxmm_preprocessed`
-  (or `data/voxmm_dev_eval`) path.
+The `manifest.csv` files inside the tarballs may still contain the original
+cluster paths (`/hpcwork/...`). Update the audio and video paths after
+extracting the archives if they do not match the local directory.
 
 ### Applying the AVEC patch
 
-The VoxMM dataset loader and a small bugfix to `align_video_to_audio` (handles
-videos slightly longer than their audio, which happens with our preprocessing)
-live as a patch against the AVEC checkout, since `external/AVEC/` itself is
-not tracked in this repo. After cloning AVEC and downloading checkpoints,
-apply the patch from the AVEC checkout root:
+The AVEC patch adds a VoxMM CSV-manifest dataset and fixes
+`align_video_to_audio` for clips where the video is slightly longer than the
+audio. Apply it from the AVEC checkout root:
 
 ```bash
 cd external/AVEC
@@ -465,18 +457,15 @@ trim rather than crash when the video is longer than the audio.
 
 ### Finetuning config
 
-The finetuning config is tracked at `configs/VoxMM/EffConfInterCTC_finetune.py`
-in this repo (not under `external/AVEC/`, since that whole directory is
-gitignored and git would not track a file there even with negation patterns).
-After setting up the AVEC checkout, copy it into place:
+The finetuning config is in `configs/VoxMM/EffConfInterCTC_finetune.py`. Copy
+it into the AVEC checkout before training:
 
 ```bash
 mkdir -p external/AVEC/configs/VoxMM
 cp configs/VoxMM/EffConfInterCTC_finetune.py external/AVEC/configs/VoxMM/
 ```
 
-The config lives there at runtime because AVEC's `main.py` resolves config
-paths and imports relative to its own checkout. It:
+The config:
 
 - loads the pretrained AV checkpoint
   (`callbacks/LRS23/AV/EffConfInterCTC/checkpoints_swa-equal-60-70.ckpt`)
@@ -486,12 +475,10 @@ paths and imports relative to its own checkout. It:
 - uses `torch.float32` precision (float16 caused NaN losses on this data)
 - uses a `CosineAnnealingScheduler` (300 warmup steps, peak LR 1e-4, 9000
   total steps, 15 epochs)
-- logs to Weights & Biases (`team1-asr` project) via a monkey-patched
-  `log_step`; you'll need to be logged in (`wandb login`) or set
-  `WANDB_MODE=offline` first
+- logs to the `team1-asr` Weights & Biases project
 
-Before running, open the config and update `manifest_train` and
-`manifest_eval` to point at wherever you extracted the two tarballs above.
+Set `manifest_train` and `manifest_eval` in the config to the extracted train
+and dev manifests.
 
 ### Running finetuning
 
@@ -510,29 +497,30 @@ On a single H100 this takes roughly 5-6 hours for the full 15 epochs. Smaller
 or slower GPUs will take longer; you can shorten the run for a smoke test with
 `--steps_per_epoch 10 --eval_steps 5`.
 
-Checkpoints are saved to
-`external/AVEC/callbacks/VoxMM/AV/EffConfInterCTC_finetune/` every epoch.
+Each epoch produces a checkpoint in
+`external/AVEC/callbacks/VoxMM/AV/EffConfInterCTC_finetune/`.
 
 ## Visual reliability routing
 
-The main reliability baseline decides between Whisper `base.en` audio-only and
-the fine-tuned AVEC audio-visual model. They are reasonably close in size:
-Whisper has around 74M parameters and AVEC-AV around 62M. This still is not a
-perfectly controlled comparison because the models were trained on different
-data, but it is more useful than only comparing AVEC against the much larger
-Parakeet model.
+For the routing experiments we compare Whisper `base.en` with our fine-tuned
+AVEC models. Whisper is still a different model trained on different data, so
+this is not a perfectly controlled comparison. It is still a more useful local
+baseline than only comparing AVEC with the much larger Parakeet model.
 
-Put the fine-tuned checkpoint here:
+The AV config expects the fine-tuned checkpoint at:
 
 ```text
-external/AVEC/callbacks/VoxMM/AV/EffConfInterCTC_finetune/<checkpoint-name>.ckpt
+external/AVEC/callbacks/VoxMM/AV/EffConfInterCTC_finetune/checkpoints_epoch_12_step_7201.ckpt
 ```
 
-Set `checkpoint` in `configs/lrs_voxmm_avec_av_finetuned_dev.toml` to the
-actual filename. The checkpoint stays local and should not be committed.
+The matching audio-only config expects its checkpoint at:
 
-First build a manifest from the original LRS-VoxMM dev clips and run the mouth
-preprocessing:
+```text
+external/AVEC/callbacks/VoxMM/AO/EffConfInterCTC_finetune/checkpoints_epoch_6_step_3600.ckpt
+```
+
+To start from the original LRS-VoxMM dev clips, build a manifest and create the
+mouth crops once:
 
 ```bash
 uv run python scripts/build_lrs_voxmm_dev_manifest.py \
@@ -545,12 +533,12 @@ uv run team1-preprocess-avec-video \
   --force
 ```
 
-Besides the mouth videos and normal `manifest.csv`, preprocessing now writes
-`visual_reliability.csv`. This contains the RetinaFace detection rate and
-confidence, mouth-landmark confidence, missing-frame statistics, and whether
-the output was only a full-frame fallback.
+This writes the mouth videos, a normal `manifest.csv`, and
+`visual_reliability.csv`. The last file contains face/landmark confidence,
+missing-frame statistics, and whether preprocessing had to fall back to the
+full frame.
 
-Run the two models:
+For the clean baseline, run Whisper and AVEC-AV:
 
 ```bash
 uv run team1-download-model base.en
@@ -558,11 +546,17 @@ uv run team1-asr configs/lrs_voxmm_whisper_base_dev.toml
 uv run team1-asr configs/lrs_voxmm_avec_av_finetuned_dev.toml
 ```
 
-The reliability tool only needs both `transcripts.jsonl` files and joins them
-using `utterance_id`. Parakeet is still available through
+The reliability scripts only need the transcript files and join them using
+`utterance_id`. Parakeet is still available through
 `configs/lrs_voxmm_parakeet_dev.toml` as a larger secondary baseline.
 
-Calibrate the threshold on VoxMM dev:
+### Clean routing check
+
+The first router tried to decide whether Whisper or AVEC-AV should be used for
+each clip. The simple version uses one threshold. The learned version uses the
+preprocessing statistics together with Whisper confidence values.
+
+For the simple threshold check:
 
 ```bash
 uv run team1-reliability calibrate \
@@ -575,16 +569,13 @@ uv run team1-reliability calibrate \
   --output-dir outputs/lrs_voxmm_reliability_dev
 ```
 
-This compares audio-only, crop success, face-detection rate, RetinaFace
-confidence, and mouth-landmark confidence. It writes the selected rule to
-`policy.json`, plus the threshold sweep, routing decisions, and WER/CER
+This writes the selected rule, threshold sweep, routing decisions, and WER/CER
 results.
 
-There is also a small learned router. It uses the same visual features together
-with Whisper's own confidence signals, then checks itself with grouped
-cross-validation so clips from the same source video are never split between
-training and validation. This only uses the files from the two completed ASR
-runs, so it does not redo preprocessing or transcription:
+The learned router uses the same visual features together with Whisper's own
+confidence values. It uses grouped cross-validation, so clips from one source
+video never appear in both training and validation. It only reads the completed
+ASR outputs, so it does not redo preprocessing or transcription:
 
 ```bash
 uv run team1-reliability learn \
@@ -597,16 +588,12 @@ uv run team1-reliability learn \
   --output-dir outputs/lrs_voxmm_reliability_200_balanced_learned
 ```
 
-The useful result here is `cross_validation_metrics.json`, not the regular
-`metrics.json`: the latter is only the model fitted and scored on the same dev
-clips. The command also writes the out-of-fold decisions and model coefficients
-to make it easier to inspect what the router learned. Only use the learned
-policy for a new split when its report says `recommended_for_test: true`.
+`cross_validation_metrics.json` contains the relevant out-of-fold result. The
+command also writes the out-of-fold decisions and model coefficients.
 
-To compare compact router variants without rerunning preprocessing, use the
-study command. It tests audio-only, visual-only, and combined features, removes
-the saturated face-detector features, tries stronger regularization, and picks
-each routing threshold inside grouped validation:
+We also compared smaller audio-only, visual-only, and combined routers. This
+removes the almost constant face-detector values, uses stronger regularization,
+and chooses the threshold inside grouped validation:
 
 ```bash
 uv run team1-reliability study \
@@ -619,9 +606,9 @@ uv run team1-reliability study \
   --output-dir outputs/lrs_voxmm_reliability_200_balanced_router_study
 ```
 
-The main result is `router_study.csv`. Its WER values are all out-of-fold, so
-they are the numbers to compare against Whisper and the single-threshold rule.
-For a presentation-ready summary figure, run:
+`router_study.csv` contains the out-of-fold WER values. On the current clean
+VoxMM-200 subset, none of these router variants beat Whisper. To create the
+summary figure:
 
 ```bash
 uv run python scripts/plot_router_study.py \
@@ -631,7 +618,55 @@ uv run python scripts/plot_router_study.py \
   --output-dir outputs/lrs_voxmm_reliability_200_balanced_router_study/figures
 ```
 
-This writes the same figure as a PNG and a PDF.
+The script writes both PNG and PDF versions of the figure.
+
+### DEMAND noise sweep
+
+The noise sweep tests whether AVEC becomes more useful once the audio is harder,
+while keeping the same mouth crops. It reuses the balanced VoxMM-200 ROI clips.
+
+First run clean fine-tuned AO once:
+
+```bash
+uv run team1-asr configs/lrs_voxmm_avec_ao_finetuned_200_balanced.toml
+```
+
+Then run DEMAND-only background noise at 10, 0, and -5 dB. All configs use the
+same seed, so an utterance gets the same DEMAND track for every model and SNR.
+
+```bash
+uv run --extra noise team1-asr configs/lrs_voxmm_whisper_base_200_balanced_demand_10db.toml
+uv run --extra noise team1-asr configs/lrs_voxmm_avec_ao_finetuned_200_balanced_demand_10db.toml
+uv run --extra noise team1-asr configs/lrs_voxmm_avec_av_finetuned_200_balanced_demand_10db.toml
+
+uv run --extra noise team1-asr configs/lrs_voxmm_whisper_base_200_balanced_demand_0db.toml
+uv run --extra noise team1-asr configs/lrs_voxmm_avec_ao_finetuned_200_balanced_demand_0db.toml
+uv run --extra noise team1-asr configs/lrs_voxmm_avec_av_finetuned_200_balanced_demand_0db.toml
+
+uv run --extra noise team1-asr configs/lrs_voxmm_whisper_base_200_balanced_demand_-5db.toml
+uv run --extra noise team1-asr configs/lrs_voxmm_avec_ao_finetuned_200_balanced_demand_-5db.toml
+uv run --extra noise team1-asr configs/lrs_voxmm_avec_av_finetuned_200_balanced_demand_-5db.toml
+```
+
+After the runs finish, summarize them and create the figures:
+
+```bash
+uv run python scripts/analyze_voxmm_noise_sweep.py \
+  --manifest data/lrs_voxmm/manifest_dev_200_balanced.csv \
+  --clean-whisper outputs/lrs_voxmm_whisper_base_200_balanced/transcripts.jsonl \
+  --clean-ao outputs/lrs_voxmm_noise_200/avec_ao_clean/transcripts.jsonl \
+  --clean-av outputs/lrs_voxmm_avec_av_finetuned_200_balanced/transcripts.jsonl \
+  --noise-root outputs/lrs_voxmm_noise_200 \
+  --output-dir outputs/lrs_voxmm_noise_200/analysis
+
+uv run python scripts/plot_voxmm_noise_sweep.py \
+  --metrics outputs/lrs_voxmm_noise_200/analysis/noise_sweep_metrics.csv \
+  --output-dir outputs/lrs_voxmm_noise_200/analysis/figures
+```
+
+The analysis reports WER curves, AVEC-AV wins over Whisper and AO, AVEC
+coverage, and the Whisper/AV oracle. These results provide the input for the
+next routing experiment under noise.
 
 For a new split, use that frozen policy to build the routed manifests:
 
@@ -644,9 +679,9 @@ uv run team1-reliability split \
   --output-dir data/lrs_voxmm/test_routed
 ```
 
-For a learned policy, run Whisper on the complete test audio first, then give
-those transcripts to `split`. The router needs Whisper's confidence features
-before it can decide which clips are worth sending to AVEC:
+For a learned policy, first transcribe the complete test audio with Whisper and
+pass its transcript file to `split`. The router uses Whisper confidence features
+when selecting clips for AVEC:
 
 ```bash
 uv run team1-reliability split \
@@ -675,9 +710,8 @@ uv run team1-reliability evaluate \
   --output-dir outputs/lrs_voxmm_reliability_test
 ```
 
-The oracle number in the report is only an upper bound calculated from the
-references. It is useful for checking whether routing has potential, but it is
-not used when making the real routing decision.
+The oracle is the upper bound obtained by selecting the lower-error prediction
+per utterance using the reference transcript. It is reported only for analysis.
 
 For a quick local check without VoxMM, use the two LRS3 clips that are already
 part of the local setup:

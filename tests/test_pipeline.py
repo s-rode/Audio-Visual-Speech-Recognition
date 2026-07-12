@@ -91,6 +91,41 @@ class PipelineTest(unittest.TestCase):
         self.assertIn("fail", failure_lines[1])
         self.assertIn("synthetic failure", failure_lines[1])
 
+    def test_resume_keeps_existing_transcripts_and_scores_all_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = _write_manifest(root)
+            output_dir = root / "outputs"
+            output_dir.mkdir()
+            (output_dir / "transcripts.jsonl").write_text(
+                "\n".join(
+                    [
+                        json.dumps({"utterance_id": "ok", "prediction": "hello"}),
+                        json.dumps({"utterance_id": "ok", "prediction": "hello"}),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch("team1_asr.pipeline.create_backend", return_value=_EchoBackend()):
+                summary = run_experiment(
+                    ExperimentConfig(
+                        backend=BackendConfig(kind="noop", model="smoke-test"),
+                        input=InputConfig(manifest_path=str(manifest)),
+                        output=OutputConfig(output_dir=str(output_dir), resume=True),
+                    )
+                )
+
+            records = [
+                json.loads(line)
+                for line in (output_dir / "transcripts.jsonl").read_text().splitlines()
+            ]
+
+        self.assertEqual([record["utterance_id"] for record in records], ["ok", "fail"])
+        self.assertEqual(summary["utterances_scored"], 2)
+        self.assertEqual(summary["wer"], 0.0)
+
 
 class _FailingBackend:
     def transcribe(self, request):
@@ -101,6 +136,17 @@ class _SometimesFailingBackend:
     def transcribe(self, request):
         if request.utterance_id == "fail":
             raise RuntimeError("synthetic failure")
+        return Transcript(
+            text=request.reference or "",
+            language=request.language,
+            duration=1.0,
+            segments=[Segment(start=0.0, end=1.0, text=request.reference or "")],
+            metadata={"backend": "test"},
+        )
+
+
+class _EchoBackend:
+    def transcribe(self, request):
         return Transcript(
             text=request.reference or "",
             language=request.language,

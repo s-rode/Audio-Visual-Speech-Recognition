@@ -54,12 +54,21 @@ def _run_experiment(
     transcript_path = output_dir / config.output.transcript_name
     failure_path = output_dir / "failed_utterances.csv"
 
-    references: list[str] = []
-    predictions: list[str] = []
+    completed_predictions = (
+        _read_completed_predictions(transcript_path) if config.output.resume else {}
+    )
     failure_rows: list[dict[str, object]] = []
     try:
-        with transcript_path.open("w", encoding="utf-8") as handle:
+        mode = "a" if config.output.resume else "w"
+        with transcript_path.open(mode, encoding="utf-8") as handle:
             for index, row in enumerate(rows, start=1):
+                if row.utterance_id in completed_predictions:
+                    _show_progress(
+                        progress,
+                        progress_handle,
+                        f"Skipping completed {index}/{len(rows)}: {row.utterance_id}",
+                    )
+                    continue
                 _show_progress(
                     progress,
                     progress_handle,
@@ -116,10 +125,7 @@ def _run_experiment(
                     )
                     + "\n"
                 )
-
-                if row.reference is not None:
-                    references.append(row.reference)
-                    predictions.append(transcript.text)
+                completed_predictions[row.utterance_id] = transcript.text
     finally:
         close = getattr(backend, "close", None)
         if close is not None:
@@ -127,6 +133,16 @@ def _run_experiment(
     if config.backend.skip_transcription_errors:
         _write_failure_report(failure_path, failure_rows)
 
+    references = [
+        row.reference
+        for row in rows
+        if row.reference is not None and row.utterance_id in completed_predictions
+    ]
+    predictions = [
+        completed_predictions[row.utterance_id]
+        for row in rows
+        if row.reference is not None and row.utterance_id in completed_predictions
+    ]
     metrics = compute_metrics(references, predictions)
     summary = {
         "experiment_name": config.experiment_name,
@@ -154,6 +170,34 @@ def _run_experiment(
     _show_progress(progress, progress_handle, f"Wrote transcripts: {transcript_path}")
     _show_progress(progress, progress_handle, f"Wrote metrics: {metrics_path}")
     return summary
+
+
+def _read_completed_predictions(path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    records: dict[str, dict[str, object]] = {}
+    had_duplicates = False
+    with path.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            utterance_id = str(record.get("utterance_id") or "")
+            if not utterance_id:
+                raise ValueError(f"Transcript {path}:{line_number} has no utterance_id")
+            if utterance_id in records:
+                had_duplicates = True
+                continue
+            records[utterance_id] = record
+    if had_duplicates:
+        path.write_text(
+            "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records.values()),
+            encoding="utf-8",
+        )
+    return {
+        utterance_id: str(record.get("prediction") or "")
+        for utterance_id, record in records.items()
+    }
 
 
 def _show_progress(enabled: bool, stream: TextIO, message: str) -> None:

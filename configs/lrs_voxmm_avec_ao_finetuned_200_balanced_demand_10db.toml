@@ -1,0 +1,37 @@
+experiment_name = "lrs-voxmm-avec-ao-finetuned-200-balanced-demand-10db"
+
+[backend]
+kind = "avec"
+model = "avec-voxmm-finetuned-ao"
+repo_path = "external/AVEC"
+config_file = "configs/LRS23/AO/EffConfCTC.py"
+callback_path = "callbacks/VoxMM/AO/EffConfInterCTC_finetune"
+checkpoint = "checkpoints_epoch_6_step_3600.ckpt"
+modality = "audio"
+language = "en"
+python_executable = "external/AVEC/.venv/bin/python3"
+skip_transcription_errors = true
+
+[noise]
+seed = 0
+
+[noise.demand]
+enabled = true
+snr_db = 10.0
+noise_path = "DEMAND/16k"
+
+[input]
+manifest_path = "data/lrs_voxmm/manifest_dev_200_balanced.csv"
+audio_column = "audio_path"
+reference_column = "reference"
+id_column = "utterance_id"
+language_column = "language"
+
+[output]
+output_dir = "outputs/lrs_voxmm_noise_200/avec_ao_demand_10db"
+transcript_name = "transcripts.jsonl"
+metrics_name = "metrics.json"
+resume = true
+
+[wandb]
+enabled = false

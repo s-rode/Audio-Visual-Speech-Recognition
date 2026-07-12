@@ -96,6 +96,7 @@ class OutputConfig:
     output_dir: str = "outputs/latest"
     transcript_name: str = "transcripts.jsonl"
     metrics_name: str = "metrics.json"
+    resume: bool = False
 
 
 @dataclass
