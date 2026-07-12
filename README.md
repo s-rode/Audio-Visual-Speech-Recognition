@@ -580,6 +580,59 @@ confidence, and mouth-landmark confidence. It writes the selected rule to
 `policy.json`, plus the threshold sweep, routing decisions, and WER/CER
 results.
 
+There is also a small learned router. It uses the same visual features together
+with Whisper's own confidence signals, then checks itself with grouped
+cross-validation so clips from the same source video are never split between
+training and validation. This only uses the files from the two completed ASR
+runs, so it does not redo preprocessing or transcription:
+
+```bash
+uv run team1-reliability learn \
+  --manifest data/lrs_voxmm/manifest_dev_200_balanced.csv \
+  --reliability data/lrs_voxmm/dev_avec_roi_200_balanced/visual_reliability.csv \
+  --audio-transcripts outputs/lrs_voxmm_whisper_base_200_balanced/transcripts.jsonl \
+  --audio-visual-transcripts outputs/lrs_voxmm_avec_av_finetuned_200_balanced/transcripts.jsonl \
+  --audio-system-name whisper_base_en \
+  --av-system-name avec_voxmm_finetuned_av \
+  --output-dir outputs/lrs_voxmm_reliability_200_balanced_learned
+```
+
+The useful result here is `cross_validation_metrics.json`, not the regular
+`metrics.json`: the latter is only the model fitted and scored on the same dev
+clips. The command also writes the out-of-fold decisions and model coefficients
+to make it easier to inspect what the router learned. Only use the learned
+policy for a new split when its report says `recommended_for_test: true`.
+
+To compare compact router variants without rerunning preprocessing, use the
+study command. It tests audio-only, visual-only, and combined features, removes
+the saturated face-detector features, tries stronger regularization, and picks
+each routing threshold inside grouped validation:
+
+```bash
+uv run team1-reliability study \
+  --manifest data/lrs_voxmm/manifest_dev_200_balanced.csv \
+  --reliability data/lrs_voxmm/dev_avec_roi_200_balanced/visual_reliability.csv \
+  --audio-transcripts outputs/lrs_voxmm_whisper_base_200_balanced/transcripts.jsonl \
+  --audio-visual-transcripts outputs/lrs_voxmm_avec_av_finetuned_200_balanced/transcripts.jsonl \
+  --audio-system-name whisper_base_en \
+  --av-system-name avec_voxmm_finetuned_av \
+  --output-dir outputs/lrs_voxmm_reliability_200_balanced_router_study
+```
+
+The main result is `router_study.csv`. Its WER values are all out-of-fold, so
+they are the numbers to compare against Whisper and the single-threshold rule.
+For a presentation-ready summary figure, run:
+
+```bash
+uv run python scripts/plot_router_study.py \
+  --study outputs/lrs_voxmm_reliability_200_balanced_router_study/router_study.json \
+  --full-learned outputs/lrs_voxmm_reliability_200_balanced_learned/cross_validation_metrics.json \
+  --oracle outputs/lrs_voxmm_reliability_200_balanced_audio_uncertainty/metrics.json \
+  --output-dir outputs/lrs_voxmm_reliability_200_balanced_router_study/figures
+```
+
+This writes the same figure as a PNG and a PDF.
+
 For a new split, use that frozen policy to build the routed manifests:
 
 ```bash
@@ -588,6 +641,20 @@ uv run team1-reliability split \
   --roi-manifest data/lrs_voxmm/test_avec_roi/manifest.csv \
   --reliability data/lrs_voxmm/test_avec_roi/visual_reliability.csv \
   --policy outputs/lrs_voxmm_reliability_dev/policy.json \
+  --output-dir data/lrs_voxmm/test_routed
+```
+
+For a learned policy, run Whisper on the complete test audio first, then give
+those transcripts to `split`. The router needs Whisper's confidence features
+before it can decide which clips are worth sending to AVEC:
+
+```bash
+uv run team1-reliability split \
+  --source-manifest data/lrs_voxmm/manifest_test.csv \
+  --roi-manifest data/lrs_voxmm/test_avec_roi/manifest.csv \
+  --reliability data/lrs_voxmm/test_avec_roi/visual_reliability.csv \
+  --audio-transcripts outputs/lrs_voxmm_test_whisper/transcripts.jsonl \
+  --policy outputs/lrs_voxmm_reliability_dev_learned/policy.json \
   --output-dir data/lrs_voxmm/test_routed
 ```
 

@@ -10,7 +10,9 @@ from team1_asr.reliability import (
     calibrate,
     diagnose_failures,
     evaluate,
+    learn,
     split_manifests,
+    study,
 )
 
 
@@ -425,6 +427,88 @@ class ReliabilityTest(unittest.TestCase):
             self.assertEqual(rows[0]["audio_visual_prediction"], "hello world")
             self.assertIn("audio_avg_logprob_mean", rows[0])
 
+    def test_learns_grouped_router_and_splits_from_audio_transcripts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            paths = _write_learned_fixture(root)
+            output_dir = root / "learned"
+
+            policy = learn(
+                paths["manifest"],
+                paths["reliability"],
+                paths["audio"],
+                paths["av"],
+                output_dir,
+                folds=5,
+                seed=4,
+            )
+
+            self.assertEqual(policy["policy_type"], "learned_logistic")
+            self.assertEqual(policy["feature_family"], "combined")
+            self.assertEqual(policy["cross_validation"]["folds"], 5)
+            self.assertTrue((output_dir / "cross_validation_decisions.csv").exists())
+            self.assertTrue((output_dir / "cross_validation_metrics.json").exists())
+            self.assertTrue((output_dir / "learned_router_coefficients.csv").exists())
+            self.assertIn("recommended_for_test", policy["cross_validation"])
+            with (output_dir / "cross_validation_decisions.csv").open() as handle:
+                decisions = list(csv.DictReader(handle))
+            self.assertEqual(len(decisions), 10)
+            self.assertEqual(
+                {row["fold"] for row in decisions if row["utterance_id"].startswith("video0_")},
+                {next(row["fold"] for row in decisions if row["utterance_id"] == "video0_00000")},
+            )
+
+            with self.assertRaisesRegex(ValueError, "require --audio-transcripts"):
+                split_manifests(
+                    paths["manifest"],
+                    paths["roi_manifest"],
+                    paths["reliability"],
+                    output_dir / "policy.json",
+                    root / "missing-audio",
+                )
+            _, _, av_manifest = split_manifests(
+                paths["manifest"],
+                paths["roi_manifest"],
+                paths["reliability"],
+                output_dir / "policy.json",
+                root / "split",
+                audio_transcripts_path=paths["audio"],
+            )
+            self.assertEqual(
+                _manifest_ids(av_manifest),
+                [f"video{index}_00000" for index in range(5)],
+            )
+
+    def test_study_compares_compact_feature_sets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            paths = _write_learned_fixture(root)
+            output_dir = root / "study"
+
+            result = study(
+                paths["manifest"],
+                paths["reliability"],
+                paths["audio"],
+                paths["av"],
+                output_dir,
+                folds=5,
+                inner_folds=2,
+                seed=2,
+            )
+
+            self.assertEqual(result["baseline"]["utterances_scored"], 10)
+            self.assertTrue((output_dir / "router_study.csv").exists())
+            self.assertTrue((output_dir / "router_study_decisions.csv").exists())
+            self.assertTrue((output_dir / "router_study.json").exists())
+            self.assertTrue((output_dir / "best_policy.json").exists())
+            with (output_dir / "router_study.csv").open() as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 9)
+            self.assertEqual(
+                {row["feature_set"] for row in rows},
+                {"audio_compact", "visual_compact", "combined_compact"},
+            )
+
 
 def _write_fixture(root: Path) -> dict[str, Path]:
     manifest = root / "manifest.csv"
@@ -469,6 +553,63 @@ def _write_fixture(root: Path) -> dict[str, Path]:
             {"utterance_id": "u3", "prediction": "wrong again"},
         ],
     )
+    return {
+        "manifest": manifest,
+        "roi_manifest": roi_manifest,
+        "reliability": reliability,
+        "audio": audio,
+        "av": av,
+    }
+
+
+def _write_learned_fixture(root: Path) -> dict[str, Path]:
+    manifest_rows = ["utterance_id,audio_path,video_path,reference,language"]
+    reliability_rows = [
+        "utterance_id,roi_status,fallback_used,face_detection_rate,"
+        "retinaface_confidence_mean,retinaface_confidence_p10,"
+        "mouth_landmark_confidence_mean,mouth_landmark_confidence_p10,"
+        "multiple_face_rate"
+    ]
+    audio_rows = []
+    av_rows = []
+    for index in range(5):
+        for utterance_index, is_av_win in ((0, True), (1, False)):
+            utterance_id = f"video{index}_{utterance_index:05d}"
+            manifest_rows.append(
+                f"{utterance_id},audio/{utterance_id}.wav,raw/{utterance_id}.mp4,hello world,en"
+            )
+            reliability_rows.append(
+                f"{utterance_id},success,false,1.0,0.9,0.9,0.8,0.8,0.0"
+            )
+            audio_rows.append(
+                {
+                    "utterance_id": utterance_id,
+                    "prediction": "wrong words" if is_av_win else "hello world",
+                    "duration": 2.0,
+                    "segments": [
+                        {
+                            "avg_logprob": -1.0 if is_av_win else -0.1,
+                            "no_speech_prob": 0.1,
+                        }
+                    ],
+                }
+            )
+            av_rows.append(
+                {
+                    "utterance_id": utterance_id,
+                    "prediction": "hello world" if is_av_win else "wrong words",
+                }
+            )
+    manifest = root / "manifest.csv"
+    manifest.write_text("\n".join(manifest_rows) + "\n")
+    roi_manifest = root / "roi_manifest.csv"
+    roi_manifest.write_text("\n".join(manifest_rows) + "\n")
+    reliability = root / "visual_reliability.csv"
+    reliability.write_text("\n".join(reliability_rows) + "\n")
+    audio = root / "audio.jsonl"
+    av = root / "av.jsonl"
+    _write_jsonl(audio, audio_rows)
+    _write_jsonl(av, av_rows)
     return {
         "manifest": manifest,
         "roi_manifest": roi_manifest,
