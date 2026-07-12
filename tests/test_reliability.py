@@ -319,6 +319,112 @@ class ReliabilityTest(unittest.TestCase):
             metrics = json.loads((root / "calibration" / "metrics.json").read_text())
             self.assertEqual(metrics["routed"]["wer"], 0.0)
 
+    def test_calibrates_audio_uncertainty_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = root / "manifest.csv"
+            manifest.write_text(
+                "utterance_id,audio_path,video_path,reference,language\n"
+                "u1,audio/u1.wav,raw/u1.mp4,hello world,en\n"
+                "u2,audio/u2.wav,raw/u2.mp4,good day,en\n"
+            )
+            reliability = root / "visual_reliability.csv"
+            reliability.write_text(
+                "utterance_id,roi_status,fallback_used,face_detection_rate,"
+                "retinaface_confidence_mean,retinaface_confidence_p10,"
+                "mouth_landmark_confidence_mean,mouth_landmark_confidence_p10,"
+                "multiple_face_rate\n"
+                "u1,success,false,1.0,0.9,0.9,0.8,0.8,0.0\n"
+                "u2,success,false,1.0,0.9,0.9,0.8,0.8,0.0\n"
+            )
+            audio = root / "audio.jsonl"
+            _write_jsonl(
+                audio,
+                [
+                    {
+                        "utterance_id": "u1",
+                        "prediction": "wrong wrong",
+                        "duration": 2.0,
+                        "segments": [{"avg_logprob": -1.2, "no_speech_prob": 0.1}],
+                    },
+                    {
+                        "utterance_id": "u2",
+                        "prediction": "good day",
+                        "duration": 2.0,
+                        "segments": [{"avg_logprob": -0.1, "no_speech_prob": 0.0}],
+                    },
+                ],
+            )
+            av = root / "av.jsonl"
+            _write_jsonl(
+                av,
+                [
+                    {"utterance_id": "u1", "prediction": "hello world"},
+                    {"utterance_id": "u2", "prediction": "bad bad"},
+                ],
+            )
+
+            policy = calibrate(
+                manifest,
+                reliability,
+                audio,
+                av,
+                root / "calibration",
+            )
+            metrics = json.loads((root / "calibration" / "metrics.json").read_text())
+            with (root / "calibration" / "routing_decisions.csv").open() as handle:
+                decisions = list(csv.DictReader(handle))
+
+            self.assertEqual(policy["policy_type"], "threshold")
+            self.assertEqual(policy["feature_family"], "audio_uncertainty")
+            self.assertEqual(policy["feature"], "audio_avg_logprob_mean")
+            self.assertEqual(policy["direction"], "lower")
+            self.assertEqual(policy["threshold"], -1.2)
+            self.assertEqual(metrics["routed"]["wer"], 0.0)
+            self.assertEqual(decisions[0]["feature_family"], "audio_uncertainty")
+            self.assertIn("audio_avg_logprob_mean", decisions[0])
+
+    def test_writes_missed_audio_visual_wins_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            paths = _write_fixture(root)
+            _write_jsonl(
+                paths["audio"],
+                [
+                    {
+                        "utterance_id": "u1",
+                        "prediction": "wrong wrong",
+                        "duration": 2.0,
+                        "segments": [{"avg_logprob": -1.0, "no_speech_prob": 0.2}],
+                    },
+                    {"utterance_id": "u2", "prediction": "good day"},
+                    {"utterance_id": "u3", "prediction": "red blue"},
+                ],
+            )
+            _write_jsonl(
+                paths["av"],
+                [
+                    {"utterance_id": "u1", "prediction": "hello world"},
+                    {"utterance_id": "u2", "prediction": "bad bad"},
+                ],
+            )
+
+            evaluate(
+                paths["manifest"],
+                paths["reliability"],
+                paths["audio"],
+                paths["av"],
+                _write_policy(root, "audio_only"),
+                root / "evaluation",
+            )
+            with (root / "evaluation" / "missed_av_wins.csv").open() as handle:
+                rows = list(csv.DictReader(handle))
+
+            self.assertEqual([row["utterance_id"] for row in rows], ["u1"])
+            self.assertEqual(rows[0]["audio_prediction"], "wrong wrong")
+            self.assertEqual(rows[0]["audio_visual_prediction"], "hello world")
+            self.assertIn("audio_avg_logprob_mean", rows[0])
+
 
 def _write_fixture(root: Path) -> dict[str, Path]:
     manifest = root / "manifest.csv"
@@ -372,7 +478,24 @@ def _write_fixture(root: Path) -> dict[str, Path]:
     }
 
 
-def _write_jsonl(path: Path, rows: list[dict[str, str]]) -> None:
+def _write_policy(root: Path, policy_type: str) -> Path:
+    policy = root / "policy.json"
+    policy.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "policy_type": policy_type,
+                "feature": None,
+                "threshold": None,
+                "audio_system": "audio",
+                "av_system": "audio_visual",
+            }
+        )
+    )
+    return policy
+
+
+def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
 
 

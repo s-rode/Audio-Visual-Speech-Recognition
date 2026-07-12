@@ -16,12 +16,23 @@ from team1_asr.visual_reliability import (
 
 
 POLICY_FEATURES = [
-    ("face_detection_rate", 1, "higher"),
-    ("retinaface_confidence_mean", 2, "higher"),
-    ("retinaface_confidence_p10", 3, "higher"),
-    ("mouth_landmark_confidence_mean", 4, "higher"),
-    ("mouth_landmark_confidence_p10", 5, "higher"),
-    ("multiple_face_rate", 6, "lower"),
+    ("face_detection_rate", 1, "higher", "visual"),
+    ("retinaface_confidence_mean", 2, "higher", "visual"),
+    ("retinaface_confidence_p10", 3, "higher", "visual"),
+    ("mouth_landmark_confidence_mean", 4, "higher", "visual"),
+    ("mouth_landmark_confidence_p10", 5, "higher", "visual"),
+    ("multiple_face_rate", 6, "lower", "visual"),
+]
+AUDIO_UNCERTAINTY_FEATURES = [
+    ("audio_avg_logprob_mean", 10, "lower"),
+    ("audio_avg_logprob_min", 11, "lower"),
+    ("audio_no_speech_prob_max", 12, "higher"),
+    ("audio_prediction_words_per_second", 13, "lower"),
+    ("audio_prediction_words_per_second", 14, "higher"),
+    ("audio_prediction_word_count", 15, "lower"),
+    ("audio_prediction_word_count", 16, "higher"),
+    ("audio_duration", 17, "lower"),
+    ("audio_duration", 18, "higher"),
 ]
 DEFAULT_AUDIO_SYSTEM = "audio"
 DEFAULT_AV_SYSTEM = "audio_visual"
@@ -134,8 +145,8 @@ def calibrate(
         audio_system_name,
     )
     sweep: list[dict[str, object]] = []
-    candidates = [_policy("roi_success", None, None, priority=0)]
-    for feature, priority, direction in POLICY_FEATURES:
+    candidates = [_policy("roi_success", None, None, priority=0, family="visual")]
+    for feature, priority, direction, family in POLICY_FEATURES:
         values = sorted(
             {
                 value
@@ -153,16 +164,43 @@ def calibrate(
                     threshold,
                     priority=priority,
                     direction=direction,
+                    family=family,
                 )
             )
-    candidates.append(_policy("audio_only", None, None, priority=4))
+    for feature, priority, direction in AUDIO_UNCERTAINTY_FEATURES:
+        values = sorted(
+            {
+                value
+                for utterance_id, row in inputs["reliability"].items()
+                if is_real_mouth_roi(row)
+                for value in [
+                    optional_float(
+                        inputs["audio"].get(utterance_id, {}).get(feature)
+                    )
+                ]
+                if value is not None
+            }
+        )
+        for threshold in values:
+            candidates.append(
+                _policy(
+                    "threshold",
+                    feature,
+                    threshold,
+                    priority=priority,
+                    direction=direction,
+                    family="audio_uncertainty",
+                )
+            )
+    candidates.append(_policy("audio_only", None, None, priority=99, family="audio"))
 
     scored: list[tuple[tuple[float, int, float], dict[str, object]]] = []
     for policy in candidates:
-        result = _route(inputs, policy)
+        result = _score_policy(inputs, policy)
         threshold = policy.get("threshold")
         sweep_row = {
             "policy_type": policy["policy_type"],
+            "feature_family": policy.get("feature_family") or "",
             "feature": policy.get("feature") or "",
             "direction": policy.get("direction") or "",
             "threshold": "" if threshold is None else threshold,
@@ -285,7 +323,11 @@ def split_manifests(
     av_rows: list[dict[str, str]] = []
     for utterance_id, source_row in source_rows.items():
         reliability_row = reliability.get(utterance_id, {})
-        if _policy_selects_av(policy, reliability_row) and utterance_id in roi_rows:
+        if (
+            _policy_feature_family(policy) == "visual"
+            and _policy_selects_av(policy, reliability_row)
+            and utterance_id in roi_rows
+        ):
             av_rows.append(_absolutize_manifest_row(roi_rows[utterance_id], roi_manifest_path))
         else:
             fallback_rows.append(
@@ -335,6 +377,7 @@ def _write_reports(
 ) -> dict[str, object]:
     result = _route(inputs, policy)
     _write_csv(output_dir / "routing_decisions.csv", result["decisions"])
+    _write_csv(output_dir / "missed_av_wins.csv", result["missed_av_wins"])
     _write_json(output_dir / "metrics.json", result["metrics"])
     return result["metrics"]
 
@@ -360,15 +403,17 @@ def _route(
     scored_decisions = 0
     missed_audio_visual_wins = 0
     false_audio_visual_routes = 0
+    missed_av_wins = []
 
     for utterance_id, row in rows.items():
         reference = row.get("reference", "")
         audio_prediction = audio[utterance_id]["prediction"]
         av_prediction = av.get(utterance_id, {}).get("prediction")
         reliability_row = reliability.get(utterance_id, {})
+        feature_row = _feature_row(reliability_row, audio[utterance_id])
         selects_av = (
             av_prediction is not None
-            and _policy_selects_av(policy, reliability_row)
+            and _policy_selects_av(policy, feature_row)
         )
         selected_system = av_system if selects_av else audio_system
         selected_prediction = av_prediction if selects_av else audio_prediction
@@ -395,6 +440,18 @@ def _route(
         )
         if reference and oracle_system == av_system and selected_system != av_system:
             missed_audio_visual_wins += 1
+            missed_av_wins.append(
+                {
+                    "utterance_id": utterance_id,
+                    "reference": reference,
+                    "audio_prediction": audio_prediction,
+                    "audio_visual_prediction": av_prediction or "",
+                    "audio_word_errors": audio_errors,
+                    "audio_visual_word_errors": av_errors,
+                    "selected_system": selected_system,
+                    **_decision_feature_values(feature_row),
+                }
+            )
         if reference and selected_system == av_system and oracle_system != av_system:
             false_audio_visual_routes += 1
         oracle_prediction = (
@@ -419,10 +476,11 @@ def _route(
             {
                 "utterance_id": utterance_id,
                 "policy_type": policy["policy_type"],
+                "feature_family": _policy_feature_family(policy),
                 "feature": feature or "",
                 "direction": _policy_direction(policy),
                 "reliability_score": (
-                    reliability_row.get(str(feature), "") if feature else ""
+                    feature_row.get(str(feature), "") if feature else ""
                 ),
                 "threshold": policy.get("threshold", ""),
                 "selected_system": selected_system,
@@ -434,6 +492,7 @@ def _route(
                 "selected_prediction": selected_prediction,
                 "selected_word_errors": selected_errors,
                 "oracle_system": oracle_system,
+                **_decision_feature_values(feature_row),
             }
         )
 
@@ -481,7 +540,58 @@ def _route(
     }
     return {
         "decisions": decisions,
+        "missed_av_wins": missed_av_wins,
         "metrics": metrics,
+        "total_word_errors": total_word_errors,
+        "total_reference_words": total_reference_words,
+        "word_error_rate": (
+            total_word_errors / total_reference_words
+            if total_reference_words
+            else None
+        ),
+        "audio_visual_selected": audio_visual_selected,
+    }
+
+
+def _score_policy(
+    inputs: dict[str, object],
+    policy: dict[str, object],
+) -> dict[str, object]:
+    rows = inputs["rows"]
+    reliability = inputs["reliability"]
+    audio = inputs["audio"]
+    av = inputs["av"]
+    total_word_errors = 0
+    total_reference_words = 0
+    audio_visual_selected = 0
+
+    for utterance_id, row in rows.items():
+        reference = row.get("reference", "")
+        if not reference:
+            continue
+        audio_prediction = audio[utterance_id]["prediction"]
+        av_prediction = av.get(utterance_id, {}).get("prediction")
+        feature_row = _feature_row(
+            reliability.get(utterance_id, {}),
+            audio[utterance_id],
+        )
+        selects_av = (
+            av_prediction is not None
+            and _policy_selects_av(policy, feature_row)
+        )
+        if selects_av:
+            selected_prediction = av_prediction
+            audio_visual_selected += 1
+        else:
+            selected_prediction = audio_prediction
+        selected_errors, reference_words = _word_error_stats(
+            reference,
+            selected_prediction,
+        )
+        total_word_errors += selected_errors
+        total_reference_words += reference_words
+
+    return {
         "total_word_errors": total_word_errors,
         "total_reference_words": total_reference_words,
         "word_error_rate": (
@@ -500,9 +610,11 @@ def _policy(
     *,
     priority: int,
     direction: str = "higher",
+    family: str = "visual",
 ) -> dict[str, object]:
     return {
         "policy_type": policy_type,
+        "feature_family": family,
         "feature": feature,
         "threshold": threshold,
         "direction": direction,
@@ -538,11 +650,22 @@ def _validate_policy(policy: dict[str, object]) -> None:
         return
     if policy_type != "threshold":
         raise ValueError(f"Unsupported reliability policy: {policy_type}")
-    if policy.get("feature") not in {item[0] for item in POLICY_FEATURES}:
+    supported_features = {item[0] for item in POLICY_FEATURES} | {
+        item[0] for item in AUDIO_UNCERTAINTY_FEATURES
+    }
+    if policy.get("feature") not in supported_features:
         raise ValueError(f"Unsupported reliability feature: {policy.get('feature')}")
     if optional_float(policy.get("threshold")) is None:
         raise ValueError("Threshold reliability policy has no numeric threshold.")
     _policy_direction(policy)
+    _policy_feature_family(policy)
+
+
+def _policy_feature_family(policy: dict[str, object]) -> str:
+    family = str(policy.get("feature_family") or "visual")
+    if family not in {"visual", "audio_uncertainty", "combined", "audio"}:
+        raise ValueError(f"Unsupported reliability feature family: {family}")
+    return family
 
 
 def _policy_direction(policy: dict[str, object]) -> str:
@@ -648,7 +771,7 @@ def _read_csv(path: Path) -> list[dict[str, str]]:
 
 
 def _read_transcripts(path: Path) -> dict[str, dict[str, str]]:
-    transcripts: dict[str, dict[str, str]] = {}
+    transcripts: dict[str, dict[str, object]] = {}
     with path.open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
             if not line.strip():
@@ -659,10 +782,71 @@ def _read_transcripts(path: Path) -> dict[str, dict[str, str]]:
                 raise ValueError(f"Transcript {path}:{line_number} has no utterance_id")
             if utterance_id in transcripts:
                 raise ValueError(f"Duplicate utterance_id in {path}: {utterance_id}")
-            transcripts[utterance_id] = {
-                "prediction": str(record.get("prediction") or ""),
-            }
+            transcripts[utterance_id] = _transcript_features(record)
     return transcripts
+
+
+def _transcript_features(record: dict[str, object]) -> dict[str, object]:
+    prediction = str(record.get("prediction") or "")
+    duration = optional_float(record.get("duration"))
+    prediction_word_count = len(_normalize_words(prediction))
+    avg_logprobs = []
+    no_speech_probs = []
+    segments = record.get("segments")
+    if isinstance(segments, list):
+        for segment in segments:
+            if not isinstance(segment, dict):
+                continue
+            avg_logprob = optional_float(segment.get("avg_logprob"))
+            if avg_logprob is not None:
+                avg_logprobs.append(avg_logprob)
+            no_speech_prob = optional_float(segment.get("no_speech_prob"))
+            if no_speech_prob is not None:
+                no_speech_probs.append(no_speech_prob)
+    return {
+        "prediction": prediction,
+        "audio_avg_logprob_mean": (
+            sum(avg_logprobs) / len(avg_logprobs) if avg_logprobs else None
+        ),
+        "audio_avg_logprob_min": min(avg_logprobs) if avg_logprobs else None,
+        "audio_no_speech_prob_max": max(no_speech_probs) if no_speech_probs else None,
+        "audio_prediction_word_count": prediction_word_count,
+        "audio_duration": duration,
+        "audio_prediction_words_per_second": (
+            prediction_word_count / duration
+            if duration is not None and duration > 0
+            else None
+        ),
+    }
+
+
+def _feature_row(
+    reliability_row: dict[str, object],
+    audio_row: dict[str, object],
+) -> dict[str, object]:
+    result = dict(reliability_row)
+    for key, value in audio_row.items():
+        if key.startswith("audio_"):
+            result[key] = value
+    return result
+
+
+def _decision_feature_values(feature_row: dict[str, object]) -> dict[str, object]:
+    fields = [
+        "face_detection_rate",
+        "retinaface_confidence_mean",
+        "retinaface_confidence_p10",
+        "mouth_landmark_confidence_mean",
+        "mouth_landmark_confidence_p10",
+        "multiple_face_rate",
+        "audio_avg_logprob_mean",
+        "audio_avg_logprob_min",
+        "audio_no_speech_prob_max",
+        "audio_prediction_word_count",
+        "audio_duration",
+        "audio_prediction_words_per_second",
+    ]
+    return {field: feature_row.get(field, "") for field in fields}
 
 
 def _diagnostic_row(
