@@ -11,10 +11,14 @@ requires-python = ">=3.9"
 dependencies = [
   "datasets>=4.0.0",
   "faster-whisper>=1.1.0",
+  "gdown>=5.2.2",
   "jiwer>=3.0.0",
   "matplotlib>=3.9.4",
   "numpy>=1.26.0",
+  "opencv-python-headless>=4.13.0.92",
   "soundfile>=0.12.1",
+  "torch>=2.8.0",
+  "wandb>=0.26.1",
 ]
 
 [project.optional-dependencies]

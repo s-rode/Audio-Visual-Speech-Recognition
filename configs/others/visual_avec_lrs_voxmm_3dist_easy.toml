@@ -1,0 +1,35 @@
+experiment_name = "visual_avec_lrs_voxmm_3dist_easy"
+
+[backend]
+kind = "avec"
+model = "avec-visual"
+repo_path = "external/AVEC"
+config_file = "configs/LRS23/VO/EffConfInterCTC.py"
+checkpoint = "checkpoints_swa-equal-90-100.ckpt"
+modality = "visual"
+language = "en"
+python_executable = "external/AVEC/.venv/bin/python3"
+
+[noise]
+enabled = false
+
+[input]
+manifest_path = "data/voxmm_and_lrs-voxmm/lrs-voxmm3/3dist_easy/manifest.csv"
+audio_column = "audio_path"
+video_column = "video_path"
+reference_column = "reference"
+id_column = "utterance_id"
+language_column = "language"
+video_preprocessing_column = "video_preprocessing"
+
+[output]
+output_dir = "outputs/visual_avec_lrs_voxmm_3dist_easy"
+transcript_name = "transcripts.jsonl"
+metrics_name = "metrics.json"
+
+[wandb]
+enabled = true
+project = "team1-asr"
+run_name = "visual_avec_lrs_voxmm_3dist_easy"
+mode = "online"
+log_transcripts = true

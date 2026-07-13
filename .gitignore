@@ -8,8 +8,7 @@ DEMAND/
 .DS_Store
 outputs/
 wandb/
-data/librispeech/
-data/lrs3/
+data/
 external/AVEC/
 tools/parakeet_coreml_bridge/.build/
 tools/parakeet_coreml_bridge/.swiftpm/

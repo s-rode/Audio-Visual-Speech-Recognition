@@ -1,0 +1,35 @@
+experiment_name = "finetune_audio_avec_lrs_voxmm_noise_easy"
+
+[backend]
+kind = "avec"
+model = "avec-audio"
+repo_path = "external/AVEC"
+config_file = "configs/LRS23/AO/EffConfCTC.py"
+checkpoint = "checkpoints_epoch_6_step_3600.ckpt"
+modality = "audio"
+language = "en"
+python_executable = "external/AVEC/.venv/bin/python3"
+
+[noise]
+enabled = false
+
+[input]
+manifest_path = "data/voxmm_and_lrs-voxmm/lrs-voxmm2/noise_easy/manifest.csv"
+audio_column = "audio_path"
+video_column = "video_path"
+reference_column = "reference"
+id_column = "utterance_id"
+language_column = "language"
+video_preprocessing_column = "video_preprocessing"
+
+[output]
+output_dir = "outputs/finetune_audio_avec_lrs_voxmm_noise_easy"
+transcript_name = "transcripts.jsonl"
+metrics_name = "metrics.json"
+
+[wandb]
+enabled = true
+project = "team1-asr"
+run_name = "finetune_audio_avec_lrs_voxmm_noise_easy"
+mode = "online"
+log_transcripts = true

@@ -18,7 +18,7 @@ _DEFAULT_SHUFFLE_BUFFER = 1000
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Stream Ainncy/LRS3 from Hugging Face, extract audio from MP4 clips, "
+            f"Stream {_DATASET_NAME} from Hugging Face, extract audio from MP4 clips, "
             "and write a WAV+manifest subset for ASR experiments."
         )
     )

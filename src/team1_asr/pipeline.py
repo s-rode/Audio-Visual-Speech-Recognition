@@ -67,6 +67,7 @@ def _run_experiment(
                     output_dir,
                     utterance_id=row.utterance_id,
                 )
+                print(row.video_path)
                 transcript = backend.transcribe(
                     TranscriptionRequest(
                         audio_path=prepared_audio_path,

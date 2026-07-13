@@ -43,6 +43,8 @@ class AvecBackend(ASRBackend):
 
         text = str(response.get("text", "")).strip()
         duration = _optional_float(response.get("duration"))
+        print(text)
+        print(duration)
         return Transcript(
             text=text,
             language=str(response.get("language") or request.language or self._config.language),
