@@ -6,11 +6,13 @@ import json
 import math
 from pathlib import Path
 import random
+import re
 import statistics
 import unicodedata
 import wave
 
 import numpy as np
+import soundfile as sf
 
 from team1_asr.evaluation import compute_metrics
 from team1_asr.visual_reliability import (
@@ -67,6 +69,26 @@ COMPACT_LEARNED_FEATURE_SETS = {
         "audio_prediction_words_per_second",
     ],
 }
+NOISE_ROUTER_FEATURE_SETS = {
+    "whisper_confidence": COMPACT_LEARNED_FEATURE_SETS["audio_compact"],
+    "audio_quality": [
+        "audio_rms_dbfs",
+        "audio_peak_dbfs",
+        "audio_crest_factor_db",
+        "audio_clipping_fraction",
+        "audio_spectral_flatness",
+    ],
+    "combined_noise": [
+        *COMPACT_LEARNED_FEATURE_SETS["audio_compact"],
+        "audio_rms_dbfs",
+        "audio_peak_dbfs",
+        "audio_crest_factor_db",
+        "audio_clipping_fraction",
+        "audio_spectral_flatness",
+        "mouth_landmark_confidence_mean",
+        "mouth_landmark_confidence_p10",
+    ],
+}
 STUDY_L2_STRENGTHS = (0.3, 1.0, 3.0)
 STUDY_CLASS_WEIGHTS = ("unweighted",)
 LEARNED_POLICY_TYPE = "learned_logistic"
@@ -100,6 +122,24 @@ def build_parser() -> argparse.ArgumentParser:
     study.add_argument("--folds", type=int, default=5)
     study.add_argument("--inner-folds", type=int, default=4)
     study.add_argument("--seed", type=int, default=0)
+
+    noise_study = subparsers.add_parser("noise-study")
+    noise_study.add_argument("--manifest", required=True)
+    noise_study.add_argument("--reliability", required=True)
+    noise_study.add_argument(
+        "--condition",
+        action="append",
+        nargs=3,
+        metavar=("NAME", "AUDIO_TRANSCRIPTS", "AV_TRANSCRIPTS"),
+        required=True,
+        help="Repeat for clean, demand_10db, demand_0db, and demand_-5db.",
+    )
+    noise_study.add_argument("--output-dir", required=True)
+    noise_study.add_argument("--audio-system-name", default=DEFAULT_AUDIO_SYSTEM)
+    noise_study.add_argument("--av-system-name", default=DEFAULT_AV_SYSTEM)
+    noise_study.add_argument("--folds", type=int, default=5)
+    noise_study.add_argument("--inner-folds", type=int, default=4)
+    noise_study.add_argument("--seed", type=int, default=0)
 
     split = subparsers.add_parser("split")
     split.add_argument("--source-manifest", required=True)
@@ -172,6 +212,18 @@ def main() -> None:
             reliability_path=Path(args.reliability),
             audio_transcripts_path=Path(args.audio_transcripts),
             av_transcripts_path=Path(args.av_transcripts),
+            output_dir=Path(args.output_dir),
+            audio_system_name=args.audio_system_name,
+            av_system_name=args.av_system_name,
+            folds=args.folds,
+            inner_folds=args.inner_folds,
+            seed=args.seed,
+        )
+    elif args.command == "noise-study":
+        noise_study(
+            manifest_path=Path(args.manifest),
+            reliability_path=Path(args.reliability),
+            conditions=[(name, Path(audio), Path(av)) for name, audio, av in args.condition],
             output_dir=Path(args.output_dir),
             audio_system_name=args.audio_system_name,
             av_system_name=args.av_system_name,
@@ -638,6 +690,131 @@ def study(
     }
 
 
+def noise_study(
+    manifest_path: Path,
+    reliability_path: Path,
+    conditions: list[tuple[str, Path, Path]],
+    output_dir: Path,
+    audio_system_name: str = DEFAULT_AUDIO_SYSTEM,
+    av_system_name: str = DEFAULT_AV_SYSTEM,
+    folds: int = 5,
+    inner_folds: int = 4,
+    seed: int = 0,
+) -> dict[str, object]:
+    """Evaluate noise-aware router features with source-video grouped CV."""
+    audio_system_name = _require_system_name(audio_system_name, "audio")
+    av_system_name = _require_system_name(av_system_name, "audio-visual")
+    if audio_system_name == av_system_name:
+        raise ValueError("Audio and audio-visual system names must be different.")
+    if len(conditions) < 2:
+        raise ValueError("Noise study needs at least two conditions.")
+    if folds < 2 or inner_folds < 2:
+        raise ValueError("--folds and --inner-folds must both be at least 2.")
+
+    inputs = _load_noise_study_inputs(
+        manifest_path, reliability_path, conditions, audio_system_name
+    )
+    outer_folds = _grouped_folds(list(inputs["rows"]), folds=folds, seed=seed)
+    all_ids = set(inputs["rows"])
+    summary_rows: list[dict[str, object]] = []
+    decision_rows: list[dict[str, object]] = []
+    config_results: dict[str, dict[str, object]] = {}
+
+    for config_index, (feature_set, features) in enumerate(NOISE_ROUTER_FEATURE_SETS.items()):
+        decisions: list[dict[str, object]] = []
+        thresholds: list[float] = []
+        for fold_index, validation_ids in enumerate(outer_folds):
+            training_inputs = _subset_inputs(inputs, all_ids - set(validation_ids))
+            validation_inputs = _subset_inputs(inputs, set(validation_ids))
+            threshold = _nested_probability_threshold(
+                training_inputs,
+                features=features,
+                l2_strength=1.0,
+                class_weight="unweighted",
+                folds=inner_folds,
+                seed=seed + config_index * 100 + fold_index,
+                audio_system_name=audio_system_name,
+                av_system_name=av_system_name,
+            )
+            policy = _fit_learned_policy(
+                training_inputs,
+                feature_candidates=features,
+                l2_strength=1.0,
+                class_weight="unweighted",
+            )
+            policy.update(
+                {
+                    "threshold": threshold,
+                    "audio_system": audio_system_name,
+                    "av_system": av_system_name,
+                }
+            )
+            result = _route(validation_inputs, policy)
+            thresholds.append(threshold)
+            for row in result["decisions"]:
+                decisions.append(row)
+                decision_rows.append(
+                    {
+                        "configuration": feature_set,
+                        "fold": fold_index,
+                        "nested_threshold": threshold,
+                        **row,
+                    }
+                )
+
+        overall = _decision_summary(decisions, av_system_name)
+        by_condition = {
+            condition: _decision_summary(
+                [row for row in decisions if row.get("condition") == condition],
+                av_system_name,
+            )
+            for condition, _, _ in conditions
+        }
+        summary = {
+            "configuration": feature_set,
+            "features": features,
+            "nested_threshold_mean": sum(thresholds) / len(thresholds),
+            "overall": overall,
+            "by_condition": by_condition,
+        }
+        config_results[feature_set] = summary
+        for condition, condition_summary in by_condition.items():
+            summary_rows.append(
+                {
+                    "configuration": feature_set,
+                    "condition": condition,
+                    "snr_db": _condition_snr_db(condition),
+                    "nested_threshold_mean": summary["nested_threshold_mean"],
+                    **condition_summary,
+                }
+            )
+
+    best_name = min(
+        config_results,
+        key=lambda name: float(config_results[name]["overall"]["routed_wer"]),
+    )
+    best = config_results[best_name]
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _write_csv(output_dir / "noise_router_metrics.csv", summary_rows)
+    _write_csv(output_dir / "noise_router_decisions.csv", decision_rows)
+    _write_json(
+        output_dir / "noise_router_study.json",
+        {
+            "conditions": [
+                {"name": name, "snr_db": _condition_snr_db(name)}
+                for name, _, _ in conditions
+            ],
+            "feature_sets": NOISE_ROUTER_FEATURE_SETS,
+            "outer_folds": len(outer_folds),
+            "inner_folds": inner_folds,
+            "seed": seed,
+            "best_configuration": best_name,
+            "configurations": config_results,
+        },
+    )
+    return {"best_configuration": best_name, "overall": best["overall"]}
+
+
 def _outer_threshold_decisions(
     inputs: dict[str, object],
     folds: list[list[str]],
@@ -917,6 +1094,8 @@ def _grouped_folds(
 
 
 def _source_video_id(utterance_id: str) -> str:
+    if "::" in utterance_id:
+        utterance_id = utterance_id.split("::", 1)[1]
     return utterance_id.rsplit("_", 1)[0] if "_" in utterance_id else utterance_id
 
 
@@ -1249,6 +1428,7 @@ def _route(
         decisions.append(
             {
                 "utterance_id": utterance_id,
+                "condition": row.get("condition", ""),
                 "policy_type": policy["policy_type"],
                 "feature_family": _policy_feature_family(policy),
                 "feature": feature or "",
@@ -1636,6 +1816,88 @@ def _read_transcripts(path: Path) -> dict[str, dict[str, str]]:
     return transcripts
 
 
+def _load_noise_study_inputs(
+    manifest_path: Path,
+    reliability_path: Path,
+    conditions: list[tuple[str, Path, Path]],
+    audio_system_name: str,
+) -> dict[str, object]:
+    manifest_rows = _read_csv_by_id(manifest_path)
+    reliability_rows = _read_csv_by_id(reliability_path)
+    names = [name for name, _, _ in conditions]
+    if len(set(names)) != len(names):
+        raise ValueError("Noise-study condition names must be unique.")
+
+    rows: dict[str, dict[str, str]] = {}
+    reliability: dict[str, dict[str, str]] = {}
+    audio: dict[str, dict[str, object]] = {}
+    av: dict[str, dict[str, object]] = {}
+    waveform_cache: dict[Path, dict[str, float | None]] = {}
+    for condition, audio_path, av_path in conditions:
+        audio_transcripts = _read_transcripts(audio_path)
+        av_transcripts = _read_transcripts(av_path)
+        missing_audio = sorted(set(manifest_rows) - set(audio_transcripts))
+        if missing_audio:
+            preview = ", ".join(missing_audio[:5])
+            raise ValueError(
+                f"{audio_system_name} transcripts are missing {len(missing_audio)} "
+                f"utterance(s) for {condition}: {preview}"
+            )
+        for utterance_id, manifest_row in manifest_rows.items():
+            key = f"{condition}::{utterance_id}"
+            rows[key] = {**manifest_row, "condition": condition}
+            reliability[key] = dict(reliability_rows.get(utterance_id, {}))
+            audio_row = dict(audio_transcripts[utterance_id])
+            used_audio = str(audio_row.get("used_audio_path") or "")
+            if used_audio:
+                path = Path(used_audio)
+                if path not in waveform_cache:
+                    waveform_cache[path] = _waveform_features(path)
+                audio_row.update(waveform_cache[path])
+            audio[key] = audio_row
+            if utterance_id in av_transcripts:
+                av[key] = dict(av_transcripts[utterance_id])
+    return {"rows": rows, "reliability": reliability, "audio": audio, "av": av}
+
+
+def _waveform_features(path: Path) -> dict[str, float | None]:
+    if not path.exists():
+        raise ValueError(f"Noisy audio file does not exist: {path}")
+    samples, _ = sf.read(path, dtype="float64", always_2d=True)
+    samples = samples.mean(axis=1)
+    if samples.size == 0:
+        return {field: None for field in _NOISE_WAVEFORM_FEATURES}
+    rms = float(np.sqrt(np.mean(samples**2)))
+    peak = float(np.max(np.abs(samples)))
+    epsilon = 1e-12
+    spectrum = np.abs(np.fft.rfft(samples * np.hanning(samples.size))) ** 2
+    spectrum = spectrum[1:] if spectrum.size > 1 else spectrum
+    flatness = float(np.exp(np.mean(np.log(spectrum + epsilon))) / (np.mean(spectrum + epsilon)))
+    return {
+        "audio_rms_dbfs": 20.0 * math.log10(max(rms, epsilon)),
+        "audio_peak_dbfs": 20.0 * math.log10(max(peak, epsilon)),
+        "audio_crest_factor_db": 20.0 * math.log10(max(peak, epsilon) / max(rms, epsilon)),
+        "audio_clipping_fraction": float(np.mean(np.abs(samples) >= 0.999)),
+        "audio_spectral_flatness": flatness,
+    }
+
+
+_NOISE_WAVEFORM_FEATURES = (
+    "audio_rms_dbfs",
+    "audio_peak_dbfs",
+    "audio_crest_factor_db",
+    "audio_clipping_fraction",
+    "audio_spectral_flatness",
+)
+
+
+def _condition_snr_db(condition: str) -> float | None:
+    if condition == "clean":
+        return None
+    match = re.fullmatch(r"demand_(-?\d+)db", condition)
+    return float(match.group(1)) if match else None
+
+
 def _transcript_features(record: dict[str, object]) -> dict[str, object]:
     prediction = str(record.get("prediction") or "")
     duration = optional_float(record.get("duration"))
@@ -1655,6 +1917,7 @@ def _transcript_features(record: dict[str, object]) -> dict[str, object]:
                 no_speech_probs.append(no_speech_prob)
     return {
         "prediction": prediction,
+        "used_audio_path": str(record.get("used_audio_path") or ""),
         "audio_avg_logprob_mean": (
             sum(avg_logprobs) / len(avg_logprobs) if avg_logprobs else None
         ),
@@ -1695,6 +1958,7 @@ def _decision_feature_values(feature_row: dict[str, object]) -> dict[str, object
         "audio_prediction_word_count",
         "audio_duration",
         "audio_prediction_words_per_second",
+        *_NOISE_WAVEFORM_FEATURES,
     ]
     return {field: feature_row.get(field, "") for field in fields}
 

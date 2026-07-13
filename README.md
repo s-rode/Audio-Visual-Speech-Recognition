@@ -668,6 +668,38 @@ The analysis reports WER curves, AVEC-AV wins over Whisper and AO, AVEC
 coverage, and the Whisper/AV oracle. These results provide the input for the
 next routing experiment under noise.
 
+### Noise-aware routing study
+
+The noise-aware study trains small logistic routers from the completed Whisper
+and AVEC-AV transcripts. It compares Whisper confidence features, waveform
+features from the noisy audio, and their combination with mouth-landmark
+confidence. The nominal DEMAND SNR is only used for reporting; it is not a
+router feature. Grouped cross-validation keeps every condition from the same
+source video in the same fold.
+
+```bash
+uv run team1-reliability noise-study \
+  --manifest data/lrs_voxmm/manifest_dev_200_balanced.csv \
+  --reliability data/lrs_voxmm/dev_avec_roi_200_balanced/visual_reliability.csv \
+  --condition clean \
+    outputs/lrs_voxmm_whisper_base_200_balanced/transcripts.jsonl \
+    outputs/lrs_voxmm_avec_av_finetuned_200_balanced/transcripts.jsonl \
+  --condition demand_10db \
+    outputs/lrs_voxmm_noise_200/whisper_demand_10db/transcripts.jsonl \
+    outputs/lrs_voxmm_noise_200/avec_av_demand_10db/transcripts.jsonl \
+  --condition demand_0db \
+    outputs/lrs_voxmm_noise_200/whisper_demand_0db/transcripts.jsonl \
+    outputs/lrs_voxmm_noise_200/avec_av_demand_0db/transcripts.jsonl \
+  --condition demand_-5db \
+    outputs/lrs_voxmm_noise_200/whisper_demand_-5db/transcripts.jsonl \
+    outputs/lrs_voxmm_noise_200/avec_av_demand_-5db/transcripts.jsonl \
+  --output-dir outputs/lrs_voxmm_noise_200/noise_router_study
+```
+
+The study writes `noise_router_metrics.csv` with an out-of-fold WER breakdown
+for every SNR, `noise_router_decisions.csv`, and `noise_router_study.json` with
+the feature-set comparison.
+
 For a new split, use that frozen policy to build the routed manifests:
 
 ```bash

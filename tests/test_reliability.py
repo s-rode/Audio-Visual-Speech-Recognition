@@ -3,14 +3,17 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+import struct
 import tempfile
 import unittest
+import wave
 
 from team1_asr.reliability import (
     calibrate,
     diagnose_failures,
     evaluate,
     learn,
+    noise_study,
     split_manifests,
     study,
 )
@@ -509,6 +512,44 @@ class ReliabilityTest(unittest.TestCase):
                 {"audio_compact", "visual_compact", "combined_compact"},
             )
 
+    def test_noise_study_groups_conditions_by_source_video(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest, reliability, conditions = _write_noise_study_fixture(root)
+            output_dir = root / "noise-study"
+
+            result = noise_study(
+                manifest,
+                reliability,
+                conditions,
+                output_dir,
+                folds=5,
+                inner_folds=2,
+                seed=1,
+            )
+
+            self.assertIn(result["best_configuration"], {
+                "whisper_confidence",
+                "audio_quality",
+                "combined_noise",
+            })
+            with (output_dir / "noise_router_decisions.csv").open() as handle:
+                decisions = list(csv.DictReader(handle))
+            self.assertEqual(len(decisions), 30)
+            for configuration in {row["configuration"] for row in decisions}:
+                rows = [row for row in decisions if row["configuration"] == configuration]
+                for video_index in range(5):
+                    folds = {
+                        row["fold"]
+                        for row in rows
+                        if row["utterance_id"].endswith(f"video{video_index}_00000")
+                    }
+                    self.assertEqual(len(folds), 1)
+            with (output_dir / "noise_router_metrics.csv").open() as handle:
+                metrics = list(csv.DictReader(handle))
+            self.assertEqual(len(metrics), 6)
+            self.assertEqual({row["condition"] for row in metrics}, {"clean", "demand_-5db"})
+
 
 def _write_fixture(root: Path) -> dict[str, Path]:
     manifest = root / "manifest.csv"
@@ -617,6 +658,60 @@ def _write_learned_fixture(root: Path) -> dict[str, Path]:
         "audio": audio,
         "av": av,
     }
+
+
+def _write_noise_study_fixture(
+    root: Path,
+) -> tuple[Path, Path, list[tuple[str, Path, Path]]]:
+    manifest_rows = ["utterance_id,audio_path,video_path,reference,language"]
+    reliability_rows = [
+        "utterance_id,roi_status,fallback_used,mouth_landmark_confidence_mean,mouth_landmark_confidence_p10"
+    ]
+    for index in range(5):
+        utterance_id = f"video{index}_00000"
+        manifest_rows.append(f"{utterance_id},audio.wav,video.mp4,hello world,en")
+        reliability_rows.append(f"{utterance_id},success,false,0.8,0.7")
+    manifest = root / "manifest.csv"
+    reliability = root / "visual_reliability.csv"
+    manifest.write_text("\n".join(manifest_rows) + "\n")
+    reliability.write_text("\n".join(reliability_rows) + "\n")
+
+    conditions = []
+    for condition, amplitude in (("clean", 0.1), ("demand_-5db", 0.7)):
+        audio_path = root / f"{condition}_audio.jsonl"
+        av_path = root / f"{condition}_av.jsonl"
+        waveform_path = root / f"{condition}.wav"
+        _write_test_wav(waveform_path, amplitude)
+        audio_rows = []
+        av_rows = []
+        for index in range(5):
+            utterance_id = f"video{index}_00000"
+            av_win = (index + (condition != "clean")) % 2 == 0
+            audio_rows.append(
+                {
+                    "utterance_id": utterance_id,
+                    "prediction": "wrong words" if av_win else "hello world",
+                    "used_audio_path": str(waveform_path),
+                    "duration": 1.0,
+                    "segments": [{"avg_logprob": -1.0 if av_win else -0.1, "no_speech_prob": 0.1}],
+                }
+            )
+            av_rows.append(
+                {"utterance_id": utterance_id, "prediction": "hello world" if av_win else "wrong words"}
+            )
+        _write_jsonl(audio_path, audio_rows)
+        _write_jsonl(av_path, av_rows)
+        conditions.append((condition, audio_path, av_path))
+    return manifest, reliability, conditions
+
+
+def _write_test_wav(path: Path, amplitude: float) -> None:
+    samples = [int(32767 * amplitude), -int(32767 * amplitude)] * 80
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16000)
+        handle.writeframes(struct.pack("<" + "h" * len(samples), *samples))
 
 
 def _write_policy(root: Path, policy_type: str) -> Path:
