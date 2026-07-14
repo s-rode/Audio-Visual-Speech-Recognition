@@ -1,0 +1,38 @@
+experiment_name = "lrs-voxmm-whisper-base-en-200-balanced-demand-10db"
+
+[backend]
+kind = "faster-whisper"
+model = "base.en"
+device = "cpu"
+compute_type = "int8"
+beam_size = 1
+best_of = 1
+language = "en"
+task = "transcribe"
+word_timestamps = false
+vad_filter = false
+condition_on_previous_text = false
+
+[noise]
+seed = 0
+
+[noise.demand]
+enabled = true
+snr_db = 10.0
+noise_path = "DEMAND/16k"
+
+[input]
+manifest_path = "data/lrs_voxmm/manifest_dev_200_balanced.csv"
+audio_column = "audio_path"
+reference_column = "reference"
+id_column = "utterance_id"
+language_column = "language"
+
+[output]
+output_dir = "outputs/lrs_voxmm_noise_200/whisper_demand_10db"
+transcript_name = "transcripts.jsonl"
+metrics_name = "metrics.json"
+resume = true
+
+[wandb]
+enabled = false

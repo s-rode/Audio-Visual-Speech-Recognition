@@ -72,6 +72,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Overwrite existing manifest/audio files in the output directory.",
     )
+    parser.add_argument(
+        "--keep-video",
+        action="store_true",
+        help="Keep MP4 clips and add video_path to the manifest for AVSR backends.",
+    )
     return parser
 
 
@@ -88,6 +93,7 @@ def main() -> None:
             cache_dir=args.cache_dir,
             skip_invalid=args.skip_invalid,
             force=args.force,
+            keep_video=args.keep_video,
         )
     except (RuntimeError, ValueError) as exc:
         raise SystemExit(f"error: {exc}") from None
@@ -109,6 +115,7 @@ def export_lrs3_hf_subset(
     cache_dir: str | None,
     skip_invalid: bool,
     force: bool,
+    keep_video: bool = False,
 ) -> None:
     if limit is not None and limit < 1:
         raise ValueError("--limit must be at least 1.")
@@ -117,6 +124,7 @@ def export_lrs3_hf_subset(
 
     manifest_path = output_dir / "manifest.csv"
     audio_dir = output_dir / "audio"
+    video_dir = output_dir / "video"
     if output_dir.exists() and any(output_dir.iterdir()):
         if not force:
             raise FileExistsError(
@@ -135,6 +143,8 @@ def export_lrs3_hf_subset(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     audio_dir.mkdir(parents=True, exist_ok=True)
+    if keep_video:
+        video_dir.mkdir(parents=True, exist_ok=True)
 
     rows: list[dict[str, object]] = []
     skipped = 0
@@ -148,6 +158,7 @@ def export_lrs3_hf_subset(
                 sample=sample,
                 audio_dir=audio_dir,
                 output_dir=output_dir,
+                video_dir=video_dir if keep_video else None,
                 language=language,
             )
         except (KeyError, RuntimeError, ValueError) as exc:
@@ -191,6 +202,7 @@ def _export_sample(
     sample: dict[str, object],
     audio_dir: Path,
     output_dir: Path,
+    video_dir: Path | None,
     language: str,
 ) -> dict[str, object]:
     source_key = str(sample["__key__"])
@@ -201,8 +213,19 @@ def _export_sample(
     if not isinstance(video, dict):
         raise ValueError(f"Sample {source_key} has unsupported mp4 payload.")
 
-    _extract_audio_to_wav(video, audio_path, temp_dir=output_dir)
-    return {
+    video_path, cleanup_video = _materialize_video(
+        video,
+        utterance_id,
+        temp_dir=output_dir,
+        video_dir=video_dir,
+    )
+    try:
+        _extract_audio_to_wav_from_path(video_path, audio_path)
+    finally:
+        if cleanup_video and video_path.exists():
+            video_path.unlink()
+
+    row = {
         "utterance_id": utterance_id,
         "audio_path": str(Path("audio") / audio_path.name),
         "reference": reference,
@@ -211,6 +234,9 @@ def _export_sample(
         "source_url": sample.get("__url__", ""),
         "dataset": _DATASET_NAME,
     }
+    if video_dir is not None:
+        row["video_path"] = str(Path("video") / video_path.name)
+    return row
 
 
 def _parse_transcript(raw_text: str) -> str:
@@ -226,31 +252,45 @@ def _parse_transcript(raw_text: str) -> str:
     return text
 
 
-def _extract_audio_to_wav(video: dict[str, object], output_path: Path, temp_dir: Path) -> None:
+def _extract_audio_to_wav_from_path(video_path: Path, output_path: Path) -> None:
+    command = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(video_path),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        str(output_path),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        details = result.stderr.strip() or result.stdout.strip() or "unknown ffmpeg error"
+        raise RuntimeError(f"ffmpeg failed for {video_path.name}: {details}")
+
+
+def _materialize_video(
+    video: dict[str, object],
+    utterance_id: str,
+    temp_dir: Path,
+    video_dir: Path | None,
+) -> tuple[Path, bool]:
     video_path, should_delete = _video_path(video, temp_dir)
-    try:
-        command = [
-            "ffmpeg",
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            str(video_path),
-            "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            str(output_path),
-        ]
-        result = subprocess.run(command, capture_output=True, text=True)
-        if result.returncode != 0:
-            details = result.stderr.strip() or result.stdout.strip() or "unknown ffmpeg error"
-            raise RuntimeError(f"ffmpeg failed for {video_path.name}: {details}")
-    finally:
-        if should_delete and video_path.exists():
-            video_path.unlink()
+    if video_dir is None:
+        return video_path, should_delete
+
+    output_path = video_dir / f"{utterance_id}.mp4"
+    if should_delete:
+        output_path.write_bytes(video_path.read_bytes())
+        video_path.unlink()
+    else:
+        shutil.copyfile(video_path, output_path)
+    return output_path, False
 
 
 def _video_path(video: dict[str, object], temp_dir: Path) -> tuple[Path, bool]:
@@ -285,6 +325,7 @@ def _write_manifest(path: Path, rows: list[dict[str, object]]) -> None:
                 "source_key",
                 "source_url",
                 "dataset",
+                "video_path",
             ],
         )
         writer.writeheader()

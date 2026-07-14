@@ -71,6 +71,38 @@ class LRS3ExportTest(unittest.TestCase):
             self.assertEqual(len(seen_video_paths), 1)
             self.assertFalse(seen_video_paths[0].exists())
 
+    def test_keep_video_exports_video_path(self) -> None:
+        sample = _sample()
+
+        def fake_ffmpeg(command, capture_output, text):
+            Path(command[-1]).write_bytes(b"wav")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "lrs3"
+            with (
+                patch.object(prepare_lrs3_hf, "_load_dataset", return_value=iter([sample])),
+                patch.object(prepare_lrs3_hf.subprocess, "run", side_effect=fake_ffmpeg),
+            ):
+                prepare_lrs3_hf.export_lrs3_hf_subset(
+                    output_dir=output_dir,
+                    split="train",
+                    limit=1,
+                    offset=0,
+                    seed=None,
+                    language="en",
+                    cache_dir=None,
+                    skip_invalid=False,
+                    force=False,
+                    keep_video=True,
+                )
+
+            with (output_dir / "manifest.csv").open("r", encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+
+            self.assertEqual(rows[0]["video_path"], "video/pretrain_abc_00001.mp4")
+            self.assertTrue((output_dir / rows[0]["video_path"]).exists())
+
     def test_skips_invalid_sample_when_requested(self) -> None:
         invalid = _sample(txt="Conf: 4\nWORD START END ASDSCORE")
         valid = _sample(key="trainval/xyz/00002")

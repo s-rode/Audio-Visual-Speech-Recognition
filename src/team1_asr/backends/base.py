@@ -10,6 +10,10 @@ from team1_asr.types import Transcript
 class TranscriptionRequest:
     audio_path: str
     language: str | None
+    utterance_id: str | None = None
+    video_path: str | None = None
+    reference: str | None = None
+    video_preprocessing: str | None = None
 
 
 class ASRBackend(Protocol):

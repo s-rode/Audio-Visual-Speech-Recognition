@@ -18,7 +18,9 @@ class Segment:
     end: float
     text: str
     avg_logprob: float | None = None
+    compression_ratio: float | None = None
     no_speech_prob: float | None = None
+    temperature: float | None = None
     words: list[WordSegment] = field(default_factory=list)
 
 

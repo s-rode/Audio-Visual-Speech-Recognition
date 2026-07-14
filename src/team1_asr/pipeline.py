@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import asdict
 import json
 import sys
 from typing import TextIO
+import wave
 
 from team1_asr.backends.base import TranscriptionRequest
 from team1_asr.backends.factory import create_backend
@@ -50,12 +52,23 @@ def _run_experiment(
     backend = create_backend(config.backend)
     _show_progress(progress, progress_handle, "Backend ready")
     transcript_path = output_dir / config.output.transcript_name
+    failure_path = output_dir / "failed_utterances.csv"
 
-    references: list[str] = []
-    predictions: list[str] = []
+    completed_predictions = (
+        _read_completed_predictions(transcript_path) if config.output.resume else {}
+    )
+    failure_rows: list[dict[str, object]] = []
     try:
-        with transcript_path.open("w", encoding="utf-8") as handle:
+        mode = "a" if config.output.resume else "w"
+        with transcript_path.open(mode, encoding="utf-8") as handle:
             for index, row in enumerate(rows, start=1):
+                if row.utterance_id in completed_predictions:
+                    _show_progress(
+                        progress,
+                        progress_handle,
+                        f"Skipping completed {index}/{len(rows)}: {row.utterance_id}",
+                    )
+                    continue
                 _show_progress(
                     progress,
                     progress_handle,
@@ -67,12 +80,37 @@ def _run_experiment(
                     output_dir,
                     utterance_id=row.utterance_id,
                 )
-                transcript = backend.transcribe(
-                    TranscriptionRequest(
-                        audio_path=prepared_audio_path,
-                        language=row.language,
+                try:
+                    transcript = backend.transcribe(
+                        TranscriptionRequest(
+                            audio_path=prepared_audio_path,
+                            language=row.language,
+                            utterance_id=row.utterance_id,
+                            video_path=row.video_path,
+                            reference=row.reference,
+                            video_preprocessing=(
+                                str(row.metadata["video_preprocessing"])
+                                if row.metadata and "video_preprocessing" in row.metadata
+                                else None
+                            ),
+                        )
                     )
-                )
+                except Exception as exc:
+                    if not config.backend.skip_transcription_errors:
+                        raise
+                    _show_progress(
+                        progress,
+                        progress_handle,
+                        f"Skipping {row.utterance_id} after backend error: {exc}",
+                    )
+                    failure_rows.append(
+                        _failure_row(
+                            row=row,
+                            prepared_audio_path=prepared_audio_path,
+                            error=exc,
+                        )
+                    )
+                    continue
                 handle.write(
                     json.dumps(
                         _serialize_transcript(
@@ -80,21 +118,31 @@ def _run_experiment(
                             row.audio_path,
                             row.reference,
                             prepared_audio_path,
+                            row.video_path,
                             transcript,
                         ),
                         ensure_ascii=False,
                     )
                     + "\n"
                 )
-
-                if row.reference is not None:
-                    references.append(row.reference)
-                    predictions.append(transcript.text)
+                completed_predictions[row.utterance_id] = transcript.text
     finally:
         close = getattr(backend, "close", None)
         if close is not None:
             close()
+    if config.backend.skip_transcription_errors:
+        _write_failure_report(failure_path, failure_rows)
 
+    references = [
+        row.reference
+        for row in rows
+        if row.reference is not None and row.utterance_id in completed_predictions
+    ]
+    predictions = [
+        completed_predictions[row.utterance_id]
+        for row in rows
+        if row.reference is not None and row.utterance_id in completed_predictions
+    ]
     metrics = compute_metrics(references, predictions)
     summary = {
         "experiment_name": config.experiment_name,
@@ -110,6 +158,7 @@ def _run_experiment(
         "reverb_enabled": config.noise.reverb.enabled,
         "bandwidth_enabled": config.noise.bandwidth.enabled,
         "utterances_scored": metrics.utterances_scored,
+        "utterances_failed": len(rows) - metrics.utterances_scored,
         "wer": metrics.wer,
         "cer": metrics.cer,
         "raw_wer": metrics.raw_wer,
@@ -121,6 +170,34 @@ def _run_experiment(
     _show_progress(progress, progress_handle, f"Wrote transcripts: {transcript_path}")
     _show_progress(progress, progress_handle, f"Wrote metrics: {metrics_path}")
     return summary
+
+
+def _read_completed_predictions(path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    records: dict[str, dict[str, object]] = {}
+    had_duplicates = False
+    with path.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            utterance_id = str(record.get("utterance_id") or "")
+            if not utterance_id:
+                raise ValueError(f"Transcript {path}:{line_number} has no utterance_id")
+            if utterance_id in records:
+                had_duplicates = True
+                continue
+            records[utterance_id] = record
+    if had_duplicates:
+        path.write_text(
+            "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records.values()),
+            encoding="utf-8",
+        )
+    return {
+        utterance_id: str(record.get("prediction") or "")
+        for utterance_id, record in records.items()
+    }
 
 
 def _show_progress(enabled: bool, stream: TextIO, message: str) -> None:
@@ -151,17 +228,66 @@ def _summary_snr(config) -> float | None:
     return None
 
 
+def _failure_row(row, prepared_audio_path: str, error: Exception) -> dict[str, object]:
+    return {
+        "utterance_id": row.utterance_id,
+        "audio_path": row.audio_path,
+        "used_audio_path": prepared_audio_path,
+        "video_path": row.video_path or "",
+        "reference": row.reference or "",
+        "language": row.language or "",
+        "video_preprocessing": (
+            str(row.metadata["video_preprocessing"])
+            if row.metadata and "video_preprocessing" in row.metadata
+            else ""
+        ),
+        "audio_duration": _wav_duration_sec(prepared_audio_path),
+        "error_message": str(error),
+    }
+
+
+def _write_failure_report(path, rows: list[dict[str, object]]) -> None:
+    fieldnames = [
+        "utterance_id",
+        "audio_path",
+        "used_audio_path",
+        "video_path",
+        "reference",
+        "language",
+        "video_preprocessing",
+        "audio_duration",
+        "error_message",
+    ]
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _wav_duration_sec(path: str) -> float | str:
+    try:
+        with wave.open(path, "rb") as handle:
+            sample_rate = handle.getframerate()
+            if sample_rate <= 0:
+                return ""
+            return handle.getnframes() / sample_rate
+    except (OSError, EOFError, wave.Error):
+        return ""
+
+
 def _serialize_transcript(
     utterance_id: str,
     clean_audio_path: str,
     reference: str | None,
     used_audio_path: str,
+    video_path: str | None,
     transcript: Transcript,
 ) -> dict[str, object]:
     return {
         "utterance_id": utterance_id,
         "clean_audio_path": clean_audio_path,
         "used_audio_path": used_audio_path,
+        "video_path": video_path,
         "reference": reference,
         "prediction": transcript.text,
         "language": transcript.language,

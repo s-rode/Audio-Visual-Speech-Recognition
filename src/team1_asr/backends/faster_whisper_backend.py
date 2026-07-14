@@ -56,7 +56,9 @@ class FasterWhisperBackend(ASRBackend):
                     end=item.end,
                     text=item.text,
                     avg_logprob=getattr(item, "avg_logprob", None),
+                    compression_ratio=getattr(item, "compression_ratio", None),
                     no_speech_prob=getattr(item, "no_speech_prob", None),
+                    temperature=getattr(item, "temperature", None),
                     words=words,
                 )
             )

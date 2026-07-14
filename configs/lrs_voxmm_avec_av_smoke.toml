@@ -1,0 +1,28 @@
+experiment_name = "lrs-voxmm-avec-av-smoke"
+
+[backend]
+kind = "avec"
+model = "avec-audio-visual"
+repo_path = "external/AVEC"
+config_file = "configs/LRS23/AV/EffConfInterCTC.py"
+checkpoint = "checkpoints_swa-equal-60-70.ckpt"
+modality = "audio_visual"
+language = "en"
+python_executable = "external/AVEC/.venv/bin/python3"
+
+[noise]
+enabled = false
+
+[input]
+manifest_path = "data/lrs_voxmm/smoke_avec_roi/manifest.csv"
+audio_column = "audio_path"
+video_column = "video_path"
+reference_column = "reference"
+id_column = "utterance_id"
+language_column = "language"
+video_preprocessing_column = "video_preprocessing"
+
+[output]
+output_dir = "outputs/lrs_voxmm_avec_av_smoke"
+transcript_name = "transcripts.jsonl"
+metrics_name = "metrics.json"

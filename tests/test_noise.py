@@ -53,6 +53,11 @@ class NoiseTest(unittest.TestCase):
             config_0.demand.snr_db = 0.0
             config_0.demand.noise_path = str(demand_root)
 
+            config_negative_5 = NoiseConfig(seed=17)
+            config_negative_5.demand.enabled = True
+            config_negative_5.demand.snr_db = -5.0
+            config_negative_5.demand.noise_path = str(demand_root)
+
             path_10 = maybe_apply_noise(
                 str(speech_path),
                 config_10,
@@ -65,8 +70,18 @@ class NoiseTest(unittest.TestCase):
                 root / "out0",
                 utterance_id="same-utt",
             )
+            path_negative_5 = maybe_apply_noise(
+                str(speech_path),
+                config_negative_5,
+                root / "out-negative-5",
+                utterance_id="same-utt",
+            )
 
             self.assertEqual(_without_snr(Path(path_10).stem), _without_snr(Path(path_0).stem))
+            self.assertEqual(
+                _without_snr(Path(path_10).stem),
+                _without_snr(Path(path_negative_5).stem),
+            )
 
     def test_processed_speech_alignment_keeps_start_of_signal(self) -> None:
         audio = np.arange(10, dtype=np.float32)

@@ -1,0 +1,29 @@
+experiment_name = "lrs-voxmm-avec-audio-diagnostic-dev"
+
+[backend]
+kind = "avec"
+model = "avec-audio"
+repo_path = "external/AVEC"
+config_file = "configs/LRS23/AO/EffConfCTC.py"
+checkpoint = "checkpoints_swa-equal-200-210.ckpt"
+modality = "audio"
+language = "en"
+python_executable = "external/AVEC/.venv/bin/python3"
+
+[noise]
+enabled = false
+
+[input]
+manifest_path = "data/lrs_voxmm/manifest_dev.csv"
+audio_column = "audio_path"
+reference_column = "reference"
+id_column = "utterance_id"
+language_column = "language"
+
+[output]
+output_dir = "outputs/lrs_voxmm_avec_audio_diagnostic_dev"
+transcript_name = "transcripts.jsonl"
+metrics_name = "metrics.json"
+
+[wandb]
+enabled = false

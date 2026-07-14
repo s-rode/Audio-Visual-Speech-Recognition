@@ -8,6 +8,30 @@ from team1_asr.config import load_config
 
 
 class ConfigTest(unittest.TestCase):
+    def test_loads_voxmm_demand_sweep_configs(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        ao_clean = load_config(root / "configs/lrs_voxmm_avec_ao_finetuned_200_balanced.toml")
+        self.assertEqual(ao_clean.backend.modality, "audio")
+        self.assertEqual(
+            ao_clean.backend.callback_path,
+            "callbacks/VoxMM/AO/EffConfInterCTC_finetune",
+        )
+        self.assertEqual(ao_clean.backend.checkpoint, "checkpoints_epoch_6_step_3600.ckpt")
+
+        for snr_db in (10, 0, -5):
+            for model in ("whisper_base", "avec_ao", "avec_av"):
+                config = load_config(
+                    root
+                    / f"configs/lrs_voxmm_{model}_finetuned_200_balanced_demand_{snr_db}db.toml"
+                    if model != "whisper_base"
+                    else root / f"configs/lrs_voxmm_whisper_base_200_balanced_demand_{snr_db}db.toml"
+                )
+                self.assertTrue(config.noise.demand.enabled)
+                self.assertEqual(config.noise.demand.snr_db, float(snr_db))
+                self.assertEqual(config.noise.demand.noise_path, "DEMAND/16k")
+                self.assertFalse(config.noise.reverb.enabled)
+                self.assertFalse(config.noise.bandwidth.enabled)
+
     def test_loads_wandb_section(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.toml"
@@ -93,6 +117,41 @@ seed = 3
         self.assertEqual(config.noise.kind, "white")
         self.assertEqual(config.noise.snr_db, 5.0)
         self.assertFalse(config.noise.advanced_enabled)
+
+    def test_loads_avec_backend_section(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.toml"
+            config_path.write_text(
+                """
+[backend]
+kind = "avec"
+model = "avec-audio-visual"
+repo_path = "external/AVEC"
+config_file = "configs/LRS23/AV/EffConfInterCTC.py"
+checkpoint = "checkpoints_swa-equal-60-70.ckpt"
+callback_path = "callbacks/VoxMM/AV/EffConfInterCTC_finetune"
+modality = "audio_visual"
+python_executable = ".venv-avec/bin/python"
+extra_args = ["--mock-transcript", "hello"]
+
+[input]
+video_column = "mouth_roi_path"
+""",
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+        self.assertEqual(config.backend.kind, "avec")
+        self.assertEqual(config.backend.repo_path, "external/AVEC")
+        self.assertEqual(config.backend.modality, "audio_visual")
+        self.assertEqual(
+            config.backend.callback_path,
+            "callbacks/VoxMM/AV/EffConfInterCTC_finetune",
+        )
+        self.assertEqual(config.backend.python_executable, ".venv-avec/bin/python")
+        self.assertEqual(config.backend.extra_args, ["--mock-transcript", "hello"])
+        self.assertEqual(config.input.video_column, "mouth_roi_path")
 
 
 if __name__ == "__main__":

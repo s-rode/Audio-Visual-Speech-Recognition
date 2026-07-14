@@ -19,6 +19,15 @@ class BackendConfig:
     word_timestamps: bool = True
     vad_filter: bool = True
     condition_on_previous_text: bool = True
+    repo_path: str = "external/AVEC"
+    config_file: str = "configs/LRS23/AV/EffConfInterCTC.py"
+    checkpoint: str = "checkpoints_swa-equal-60-70.ckpt"
+    callback_path: str | None = None
+    modality: str = "audio_visual"
+    python_executable: str = "python"
+    runner_module: str = "team1_asr.avec_manifest_runner"
+    extra_args: list[str] = field(default_factory=list)
+    skip_transcription_errors: bool = False
 
 
 @dataclass
@@ -75,9 +84,11 @@ class NoiseConfig:
 class InputConfig:
     manifest_path: str = "data/manifest.csv"
     audio_column: str = "audio_path"
+    video_column: str | None = "video_path"
     reference_column: str = "reference"
     id_column: str = "utterance_id"
     language_column: str = "language"
+    video_preprocessing_column: str | None = "video_preprocessing"
 
 
 @dataclass
@@ -85,6 +96,7 @@ class OutputConfig:
     output_dir: str = "outputs/latest"
     transcript_name: str = "transcripts.jsonl"
     metrics_name: str = "metrics.json"
+    resume: bool = False
 
 
 @dataclass

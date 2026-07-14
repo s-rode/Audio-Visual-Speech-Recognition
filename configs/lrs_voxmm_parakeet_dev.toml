@@ -1,0 +1,25 @@
+experiment_name = "lrs-voxmm-parakeet-dev"
+
+[backend]
+kind = "parakeet-coreml"
+model = "FluidInference/parakeet-tdt-0.6b-v3-coreml"
+device = "ane"
+language = "en"
+
+[noise]
+enabled = false
+
+[input]
+manifest_path = "data/lrs_voxmm/manifest_dev.csv"
+audio_column = "audio_path"
+reference_column = "reference"
+id_column = "utterance_id"
+language_column = "language"
+
+[output]
+output_dir = "outputs/lrs_voxmm_parakeet_dev"
+transcript_name = "transcripts.jsonl"
+metrics_name = "metrics.json"
+
+[wandb]
+enabled = false

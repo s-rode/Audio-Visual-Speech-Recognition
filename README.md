@@ -1,200 +1,116 @@
 # Team 1 ASR Pipeline
 
-This repository contains a minimal, modular ASR experiment scaffold:
+This repository contains the speech recognition experiments for the lab. It
+supports Whisper, Parakeet CoreML, and AVEC audio-only, visual-only, and
+audio-visual recognition. All backends use CSV manifests and write transcripts,
+WER, and CER in the same format.
 
-- Whisper-based batch transcription via `faster-whisper`
-- Parakeet v3 CoreML transcription through a small Swift bridge
-- a swappable backend interface for comparing ASR models
-- manifest-driven experiment runs
-- optional white-noise and DEMAND/reverb/bandwidth noise injection
-- WER and CER evaluation against references
-- Hugging Face export tooling for LibriSpeech and LRS3 audio subsets
+## Setup
+
+The project uses uv:
+
+~~~bash
+uv sync
+~~~
+
+The DEMAND noise experiments need the optional noise dependencies:
+
+~~~bash
+uv sync --extra noise
+~~~
+
+ffmpeg is needed for audio and video decoding. Parakeet CoreML also needs
+Swift/Xcode command-line tools.
 
 ## Project layout
 
-```text
-configs/
-  lrs3_test_parakeet_coreml_clean.toml
-  lrs3_test_parakeet_coreml_advanced_30db.toml
-  lrs3_test_parakeet_coreml_advanced_20db.toml
-  lrs3_test_parakeet_coreml_advanced_10db.toml
-  lrs3_test_parakeet_coreml_advanced_5db.toml
-  lrs3_test_parakeet_coreml_advanced_0db.toml
-  lrs3_test_parakeet_coreml_advanced_-5db.toml
-  lrs3_hf_tiny.toml
-  lrs3_hf_tiny_clean.toml
-  lrs3_hf_tiny_white_20db.toml
-  lrs3_hf_tiny_white_10db.toml
-  lrs3_hf_tiny_white_0db.toml
-  librispeech_demo_tiny.toml
-  librispeech_validation_whisper.toml
-  noop_smoke.toml
-  whisper_baseline.toml
-data/
-  example_manifest.csv
-src/team1_asr/
-  backends/
-  cli.py
-  config.py
-  evaluation.py
-  manifest.py
-  noise.py
-  pipeline.py
-  prepare_lrs3_hf.py
-  prepare_lrs3_test_hf.py
-  prepare_librispeech.py
-  types.py
-```
-
-## Install
-
-Create the virtual environment and install the project with `uv`:
-
-```bash
-uv sync
-```
-
-To enable Weights & Biases logging, install the optional tracking dependencies:
-
-```bash
-uv sync --extra tracking
-```
-
-To run DEMAND/reverb/bandwidth noise experiments, install the optional noise
-dependencies:
-
-```bash
-uv sync --extra noise --extra tracking
-```
-
-You also need `ffmpeg` available on the system for Whisper audio decoding.
-Parakeet CoreML experiments additionally need Swift/Xcode command line tools.
-
-This project pins `uv`'s cache to a local `.uv-cache/` directory so `uv run` and `uv sync`
-do not depend on the machine's global cache configuration.
+~~~text
+configs/           experiment configurations
+data/              manifests and local datasets
+external/AVEC/     editable AVEC checkout
+patches/           patch for the AVEC VoxMM dataset loader
+scripts/           manifest builders and analysis/plot scripts
+src/team1_asr/     experiment pipeline and backends
+~~~
 
 ## Manifest format
 
-The pipeline expects a CSV manifest. The default columns are:
+The pipeline uses CSV manifests. The standard columns are:
 
-```csv
-utterance_id,audio_path,reference,language
-utt-00001,data/audio/file1.wav,ground truth transcript,en
-utt-00002,data/audio/file2.wav,another reference,en
-```
+~~~csv
+utterance_id,audio_path,video_path,reference,language
+utt-00001,data/audio/file1.wav,data/video/file1.mp4,ground truth transcript,en
+~~~
 
-- `utterance_id`: optional, auto-generated if missing
-- `audio_path`: required
-- `reference`: optional, but required for WER/CER
-- `language`: optional, falls back to config
+audio_path is required. AVEC visual and audio-visual runs also need video_path.
+reference is used to calculate WER and CER.
 
-## Run
+## Basic runs
 
-Run a smoke test without model dependencies:
+The no-op config checks that the pipeline itself is installed:
 
-```bash
+~~~bash
 uv run team1-asr configs/noop_smoke.toml
-```
+~~~
 
-Run the actual Whisper baseline:
+Whisper can then be run with the normal experiment command:
 
-```bash
+~~~bash
 uv run team1-asr configs/whisper_baseline.toml
-```
+~~~
 
-Prepare a LibriSpeech subset from Hugging Face:
+Each run writes transcripts.jsonl and metrics.json to the configured output
+directory. transcripts.jsonl has one record per utterance and includes the
+actual noisy-audio path when noise is enabled.
 
-```bash
-uv run team1-prepare-librispeech data/librispeech/validation --config clean --split validation --limit 500 --force
-```
+## Hugging Face datasets
 
-Run Whisper on that LibriSpeech export:
+### LibriSpeech
 
-```bash
+~~~bash
+uv run team1-prepare-librispeech data/librispeech/validation \
+  --config clean --split validation --limit 500 --force
 uv run team1-asr configs/librispeech_validation_whisper.toml
-```
+~~~
 
-For a quick one-utterance demo with a smaller model:
+### LRS3
 
-```bash
-uv run team1-prepare-librispeech data/librispeech/validation --config clean --split validation --limit 1 --force
-uv run team1-download-model tiny.en
-uv run team1-asr configs/librispeech_demo_tiny.toml
-uv run team1-show-transcripts outputs/librispeech_demo_tiny/transcripts.jsonl --limit 1
-```
+The official LRS3 download is currently unavailable, so development runs use
+the Hugging Face mirror Ainncy/LRS3. The helper streams the dataset, exports
+WAV audio, and writes a normal manifest.
 
-`team1-download-model` shows Hugging Face download progress and caches the model
-before `team1-asr` loads it. The experiment runner also prints progress messages
-while loading the backend and transcribing utterances.
+~~~bash
+uv run team1-prepare-lrs3-hf data/lrs3/hf_train_100 --limit 100 --force
+uv run team1-asr configs/lrs3_hf_tiny.toml
+~~~
 
-Outputs are written to the configured output directory as:
+Keeping the video adds video_path to the manifest and makes the export usable
+for AVEC:
 
-- `transcripts.jsonl`: one JSON record per utterance
-- `metrics.json`: experiment summary plus normalized `wer`/`cer` and raw `raw_wer`/`raw_cer`
+~~~bash
+uv run team1-prepare-lrs3-hf data/lrs3/hf_av_tiny \
+  --limit 10 --keep-video --force
+~~~
 
-## Weights & Biases Tracking
+The mirror is useful for development, but it is not an exact reproduction of
+the official LRS3 test benchmark.
 
-Experiment configs can opt into W&B logging with a `[wandb]` section:
+## Noise
 
-```toml
-[wandb]
-enabled = true
-project = "team1-asr"
-run_name = "lrs3-tiny-white-10db"
-mode = "offline"
-log_artifacts = true
-log_transcripts = true
-transcript_table_limit = 100
-```
+The pipeline supports white noise as well as DEMAND background noise, reverb,
+and bandwidth changes. A simple white-noise config looks like this:
 
-When enabled, `team1-asr` logs numeric metrics and a transcript table.
-`log_artifacts = true` also uploads the run output directory as a W&B artifact.
-`mode = "offline"` keeps laptop runs local. `mode = "online"` syncs directly to
-W&B.
-
-## LRS3 Test Experiment
-
-The current setup uses LRS3 test audio, Parakeet CoreML, and seeded advanced
-noise from DEMAND/reverb/bandwidth transforms.
-
-Small smoke export using the same manifest path as the checked-in configs:
-
-```bash
-uv run team1-prepare-lrs3-test data/lrs3/hf_test_full --limit 2 --force
-uv run team1-asr configs/lrs3_test_parakeet_coreml_clean.toml
-```
-
-Full test export and Parakeet SNR sweep:
-
-```bash
-uv run team1-prepare-lrs3-test data/lrs3/hf_test_full --force
-uv run --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_clean.toml
-uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_30db.toml
-uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_20db.toml
-uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_10db.toml
-uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_5db.toml
-uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_0db.toml
-uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_-5db.toml
-```
-
-The local DEMAND dataset is expected at `DEMAND/16k`. Dataset exports, generated
-audio, W&B runs, and build outputs are ignored by Git.
-
-## Noise configuration
-
-Legacy flat noise configs still work:
-
-```toml
+~~~toml
 [noise]
 enabled = true
 kind = "white"
 snr_db = 10.0
 seed = 0
-```
+~~~
 
-Advanced noise uses nested sections and a deterministic seed:
+DEMAND uses a local copy of the data at DEMAND/16k:
 
-```toml
+~~~toml
 [noise]
 seed = 0
 
@@ -202,98 +118,193 @@ seed = 0
 enabled = true
 snr_db = 10.0
 noise_path = "DEMAND/16k"
+~~~
 
-[noise.reverb]
-enabled = true
+Using the same seed makes the noise selection deterministic for a given
+utterance, which is useful when comparing models at several SNRs.
 
-[noise.bandwidth]
-enabled = true
-```
+## AVEC and VoxMM
 
-Place the local DEMAND dataset at `DEMAND/` in the repository root. The pipeline
-uses `DEMAND/16k` and ignores the whole folder in Git.
+AVEC is kept as an editable checkout in external/AVEC. The repository wraps its
+audio-only, visual-only, and audio-visual models so they use the same manifests,
+transcripts, noise pipeline, and WER/CER evaluation as the other backends.
+Fine-tuning still happens inside the AVEC checkout.
 
-For advanced noise, the pipeline applies reverb, then DEMAND background mixing,
-then bandwidth limitation. Random choices are derived from `seed + utterance_id`,
-so SNR sweeps remain reproducible per utterance.
+### AVEC setup
 
-## Parakeet CoreML
+~~~bash
+git clone https://github.com/burchim/AVEC external/AVEC
+cd external/AVEC
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
+python3 download_checkpoints_and_tokenizers.py
+~~~
 
-LRS3 test export:
+Mouth preprocessing uses AVEC's LipDetectCrop together with ibug face detection
+and alignment:
 
-```bash
-uv run team1-prepare-lrs3-test data/lrs3/hf_test_full --force
-```
+~~~bash
+mkdir -p external_deps
+git clone https://github.com/hhj1897/face_detection.git external_deps/face_detection
+git clone https://github.com/hhj1897/face_alignment.git external_deps/face_alignment
+python3 -m pip install -e external_deps/face_detection
+python3 -m pip install -e external_deps/face_alignment
+~~~
 
-FluidAudio/CoreML bridge build:
+The face-detection repository uses Git LFS for RetinaFace weights. When that
+download is unavailable, the original RetinaFace repository links the same
+Resnet50_Final.pth weight file. Place it here:
 
-```bash
-swift build -c release --package-path tools/parakeet_coreml_bridge
-```
+~~~text
+external/AVEC/external_deps/face_detection/ibug/face_detection/retina_face/weights/Resnet50_Final.pth
+~~~
 
-Clean Parakeet run:
+The VoxMM patch adds a CSV-manifest dataset loader and fixes video/audio
+alignment for clips where the video is slightly longer than the audio:
 
-```bash
-uv run team1-asr configs/lrs3_test_parakeet_coreml_clean.toml
-```
+~~~bash
+cd external/AVEC
+git apply ../../patches/avec_voxmm_dataset.patch
+~~~
 
-Seeded advanced-noise run:
+### Preprocessing VoxMM
 
-```bash
-uv run --extra noise --extra tracking team1-asr configs/lrs3_test_parakeet_coreml_advanced_10db.toml
-```
+The router experiments start from original VoxMM clips, not already-cropped face
+videos. The manifest builder finds the audio, video, and transcripts in a split
+directory. AVEC preprocessing then creates the mouth ROI clips and the metadata
+needed for routing.
 
-The Parakeet backend uses `FluidInference/parakeet-tdt-0.6b-v3-coreml` through
-FluidAudio and labels runs as `parakeet-coreml`.
+~~~bash
+uv run python scripts/build_lrs_voxmm_dev_manifest.py \
+  /path/to/voxmm/dev \
+  data/lrs_voxmm/manifest_dev.csv
 
-## Design choice
+uv run team1-preprocess-avec-video \
+  data/lrs_voxmm/manifest_dev.csv \
+  data/lrs_voxmm/dev_avec_roi \
+  --force
+~~~
 
-The project uses a small local pipeline instead of wrapping everything in one
-external CLI. The important parts stay explicit:
+The output directory contains:
 
-- backend and model
-- noise type
-- evaluation metrics
-- logging and output format
+- manifest.csv: audio paths and generated mouth ROI video paths for AVEC
+- visual_reliability.csv: face/landmark confidence, missing-frame and
+  interpolation statistics, multiple-face rate, ROI status, and failure reason
+- video/: generated 88x88 mouth ROI clips
 
-## LibriSpeech Workflow
+The same workflow applies to train data. The generated manifest is used for
+AVEC training and inference; visual_reliability.csv is used by the router.
 
-LibriSpeech uses Hugging Face `openslr/librispeech_asr` and exports a local
-manifest plus WAV files.
+### AVEC inference and fine-tuning
 
-The `team1-prepare-librispeech` command:
+The preprocessed LRS3 configs are a quick AVEC smoke test:
 
-- loads a LibriSpeech split directly from Hugging Face
-- exports the first `--limit` utterances in streaming mode for quick local tests
-- writes one local `.wav` file per utterance plus a `manifest.csv`
-- can also save a Hugging Face subset with `--save-dataset`, which may require downloading the full split before applying `--limit`
+~~~bash
+uv run team1-asr configs/lrs3_avec_audio_preprocessed_clean.toml
+uv run team1-asr configs/lrs3_avec_visual_preprocessed_clean.toml
+uv run team1-asr configs/lrs3_avec_av_preprocessed_clean.toml
+~~~
 
-Useful split options are `--config clean --split validation` and
-`--config clean --split test`. `train.100` is available when training data is
-needed.
+The VoxMM AV fine-tuning config is
+configs/VoxMM/EffConfInterCTC_finetune.py. It starts from the LRS23 AV model,
+freezes part of the visual branch, and uses float32 with cosine learning-rate
+decay. Copy it into AVEC, set manifest_train and manifest_eval, then run:
 
-## LRS3 Hugging Face Workflow
+~~~bash
+mkdir -p external/AVEC/configs/VoxMM
+cp configs/VoxMM/EffConfInterCTC_finetune.py external/AVEC/configs/VoxMM/
 
-For audio-only ASR experiments on LRS3, the project can stream the third-party
-Hugging Face mirror `Ainncy/LRS3` without storing the full dataset locally. The
-command downloads one MP4 clip at a time, extracts mono 16 kHz WAV audio with
-`ffmpeg`, writes `manifest.csv`, and deletes the temporary MP4.
+cd external/AVEC
+.venv/bin/python3 main.py \
+  -c configs/VoxMM/EffConfInterCTC_finetune.py \
+  --mode training \
+  --eval_period_epoch 1 \
+  --saving_period_epoch 1 \
+  --batch_size_eval 8 \
+  --step_log_period 50
+~~~
 
-```bash
-uv run team1-prepare-lrs3-hf data/lrs3/hf_train_100 --limit 100 --force
-uv run team1-download-model tiny.en
-uv run team1-asr configs/lrs3_hf_tiny.toml
-uv run team1-show-transcripts outputs/lrs3_hf_tiny/transcripts.jsonl --limit 5
-```
+The AV checkpoint is expected at:
 
-Noise variants reuse the same exported audio manifest:
+~~~text
+external/AVEC/callbacks/VoxMM/AV/EffConfInterCTC_finetune/checkpoints_epoch_12_step_7201.ckpt
+~~~
 
-```bash
-uv run team1-asr configs/lrs3_hf_tiny_clean.toml
-uv run team1-asr configs/lrs3_hf_tiny_white_20db.toml
-uv run team1-asr configs/lrs3_hf_tiny_white_10db.toml
-uv run team1-asr configs/lrs3_hf_tiny_white_0db.toml
-```
+The matching audio-only checkpoint is expected at:
 
-The Hugging Face mirror currently exposes one `train` split. Runs from this
-mirror are exploratory ASR/noise runs, not an official LRS3 test benchmark.
+~~~text
+external/AVEC/callbacks/VoxMM/AO/EffConfInterCTC_finetune/checkpoints_epoch_6_step_3600.ckpt
+~~~
+
+## Reliability routing
+
+The router is a sequential setup. Whisper base.en always transcribes the audio
+first. Based on transcript statistics, noisy-audio features, mouth ROI quality
+and motion, audio-video synchronization, and preprocessing reliability values,
+it decides whether AVEC-AV should also run. It does not use AVEC predictions or
+AVEC confidence for this decision.
+
+The current development experiment is a balanced 600-clip VoxMM subset across
+source videos. It uses clean audio and three DEMAND conditions: 10 dB, 0 dB,
+and -5 dB.
+
+~~~bash
+uv run team1-asr configs/lrs_voxmm_whisper_base_600_enriched.toml
+uv run --extra noise team1-asr configs/lrs_voxmm_whisper_base_600_enriched_demand_10db.toml
+uv run --extra noise team1-asr configs/lrs_voxmm_whisper_base_600_enriched_demand_0db.toml
+uv run --extra noise team1-asr configs/lrs_voxmm_whisper_base_600_enriched_demand_-5db.toml
+~~~
+
+The resulting Whisper transcripts, noisy waveforms, and existing mouth ROI
+clips are turned into router features with:
+
+~~~bash
+uv run team1-reliability extract-features \
+  --roi-manifest data/lrs_voxmm/dev_avec_roi_600_balanced/manifest.csv \
+  --reliability data/lrs_voxmm/dev_avec_roi_600_balanced/visual_reliability.csv \
+  --condition clean outputs/lrs_voxmm_noise_600_enriched/whisper_clean/transcripts.jsonl \
+  --condition demand_10db outputs/lrs_voxmm_noise_600_enriched/whisper_demand_10db/transcripts.jsonl \
+  --condition demand_0db outputs/lrs_voxmm_noise_600_enriched/whisper_demand_0db/transcripts.jsonl \
+  --condition demand_-5db outputs/lrs_voxmm_noise_600_enriched/whisper_demand_-5db/transcripts.jsonl \
+  --output-dir outputs/lrs_voxmm_noise_600_enriched/features
+~~~
+
+routing_features.csv contains one row per condition and utterance. The summary
+CSV and JSON files describe missingness and the p10, median, and p90 of each
+feature for every condition.
+
+The noise study compares the existing logistic baseline with enriched logistic
+and benefit-aware tree routers. It uses grouped nested cross-validation, so all
+conditions from a source video remain in the same fold. Nominal SNR is only a
+reporting condition, not a router input.
+
+~~~bash
+uv run team1-reliability noise-study \
+  --manifest data/lrs_voxmm/manifest_dev_600_balanced.csv \
+  --reliability data/lrs_voxmm/dev_avec_roi_600_balanced/visual_reliability.csv \
+  --features outputs/lrs_voxmm_noise_600_enriched/features/routing_features.csv \
+  --condition clean \
+    outputs/lrs_voxmm_noise_600_enriched/whisper_clean/transcripts.jsonl \
+    outputs/lrs_voxmm_noise_600/avec_av_clean/transcripts.jsonl \
+  --condition demand_10db \
+    outputs/lrs_voxmm_noise_600_enriched/whisper_demand_10db/transcripts.jsonl \
+    outputs/lrs_voxmm_noise_600/avec_av_demand_10db/transcripts.jsonl \
+  --condition demand_0db \
+    outputs/lrs_voxmm_noise_600_enriched/whisper_demand_0db/transcripts.jsonl \
+    outputs/lrs_voxmm_noise_600/avec_av_demand_0db/transcripts.jsonl \
+  --condition demand_-5db \
+    outputs/lrs_voxmm_noise_600_enriched/whisper_demand_-5db/transcripts.jsonl \
+    outputs/lrs_voxmm_noise_600/avec_av_demand_-5db/transcripts.jsonl \
+  --output-dir outputs/lrs_voxmm_noise_600_enriched/noise_router_study
+~~~
+
+The study writes out-of-fold WER values, routing decisions, oracle WER, the
+remaining router-to-oracle gap, bootstrap comparisons, and fitted coefficients
+or feature importances. The presentation figure can be generated with:
+
+~~~bash
+uv run python scripts/plot_voxmm_noise_router_study.py \
+  --study outputs/lrs_voxmm_noise_600_enriched/noise_router_study/noise_router_study.json \
+  --output-dir outputs/lrs_voxmm_noise_600_enriched/figures
+~~~
