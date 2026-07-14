@@ -5,6 +5,7 @@ sys.path.append("../../")
 
 import nnet
 import torch
+from configs.VoxMM.ctc_decoding import decoder_options_from_env, make_ctc_decoder
 
 
 def _env_or_existing_path(env_name, local_path, cluster_path):
@@ -36,7 +37,8 @@ callback_path = os.environ.get("VOXMM_CALLBACK_PATH", "callbacks/VoxMM/AO/EffCon
 batch_size = int(os.environ.get("VOXMM_EVAL_BATCH_SIZE", os.environ.get("VOXMM_BATCH_SIZE", "8")))
 precision = torch.float32
 recompute_metrics = True
-beam_search = False
+beam_search = False  # Kept for compatibility with upstream config naming.
+decoder_options = decoder_options_from_env()
 
 model = nnet.AudioEfficientConformerInterCTC(
     vocab_size=vocab_size,
@@ -46,7 +48,7 @@ model = nnet.AudioEfficientConformerInterCTC(
 model.compile(
     losses=nnet.CTCLoss(zero_infinity=True, assert_shorter=False),
     metrics=nnet.WordErrorRate(),
-    decoders=nnet.CTCGreedySearchDecoder(tokenizer_path=tokenizer_path),
+    decoders=make_ctc_decoder(nnet, tokenizer_path, decoder_options),
     loss_weights=loss_weights,
 )
 checkpoint = torch.load(pretrained_checkpoint, map_location=model.device)
@@ -71,7 +73,21 @@ wandb.init(
         "pretrained": pretrained_checkpoint,
         "eval_manifest": manifest_eval,
         "batch_size": batch_size,
-        "decoder": "ctc-greedy",
+        "decoder": decoder_options["decoder"],
+        "beam_size": decoder_options["beam_size"],
+        "beam_cutoff_top_n": decoder_options["beam_cutoff_top_n"],
+        "beam_temperature": decoder_options["beam_temperature"],
+        "beam_token_bonus": decoder_options["beam_token_bonus"],
+        "lm_manifest": decoder_options["lm_manifest"],
+        "lm_type": decoder_options["lm_type"],
+        "lm_weight": decoder_options["lm_weight"],
+        "lm_order": decoder_options["lm_order"],
+        "lm_smoothing": decoder_options["lm_smoothing"],
+        "lm_discount": decoder_options["lm_discount"],
+        "word_bonus": decoder_options["word_bonus"],
+        "kenlm_path": decoder_options["kenlm_path"],
+        "unigram_path": decoder_options["unigram_path"],
+        "kenlm_max_words": decoder_options["kenlm_max_words"],
         "dataset": os.environ.get("VOXMM_DATASET_NAME", "VoxMM-dev-eval"),
     },
 )
@@ -103,6 +119,7 @@ evaluation_dataset = nnet.datasets.VoxMM(
     collate_fn=collate_fn,
     manifest_path=manifest_eval,
     tokenizer_path=tokenizer_path,
+    shuffle=False,
     load_audio=True,
     load_video=False,
     align=False,
