@@ -128,6 +128,9 @@ wandb.init(
         "beam_size": decoder_options["beam_size"],
         "beam_cutoff_top_n": decoder_options["beam_cutoff_top_n"],
         "beam_temperature": decoder_options["beam_temperature"],
+        "beam_threshold": decoder_options["beam_threshold"],
+        "beam_log_add": decoder_options["beam_log_add"],
+        "blank_bias": decoder_options["blank_bias"],
         "beam_token_bonus": decoder_options["beam_token_bonus"],
         "lm_manifest": decoder_options["lm_manifest"],
         "lm_type": decoder_options["lm_type"],
@@ -138,7 +141,11 @@ wandb.init(
         "word_bonus": decoder_options["word_bonus"],
         "kenlm_path": decoder_options["kenlm_path"],
         "unigram_path": decoder_options["unigram_path"],
+        "lexicon_unigram_path": decoder_options["lexicon_unigram_path"],
         "kenlm_max_words": decoder_options["kenlm_max_words"],
+        "nbest": decoder_options["nbest"],
+        "rescore_lm_weight": decoder_options["rescore_lm_weight"],
+        "rescore_word_bonus": decoder_options["rescore_word_bonus"],
     }
 )
 

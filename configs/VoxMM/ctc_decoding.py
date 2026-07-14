@@ -35,6 +35,10 @@ class SimpleWordNGramLM:
     @staticmethod
     def words(text):
         text = text.lower()
+        # VoxMM uses forms such as ``(23/TWENTY THREE)`` in its transcripts.
+        # Only the spoken form belongs in a word LM; treating both sides as
+        # consecutive words teaches impossible phrases such as "23 twenty".
+        text = re.sub(r"\((?:[^()/]+/)+([^()]+)\)", r" \1 ", text)
         text = re.sub(r"[^a-z0-9']+", " ", text)
         return [word for word in text.split() if word]
 
@@ -315,7 +319,9 @@ class CTCPrefixBeamSearchDecoder(nn.Module):
         return self.lm.words(self.tokenizer.decode(list(completed_prefix)))
 
 
-class FlashlightUnigramLM:
+class FlashlightWordNGramLM:
+    """Adapt a Python word n-gram LM to the Flashlight stateful LM API."""
+
     def __init__(self, word_lm, lm_dict_words):
         from torchaudio.models.decoder import CTCDecoderLM, CTCDecoderLMState
 
@@ -326,24 +332,36 @@ class FlashlightUnigramLM:
 
             def start(self, start_with_nothing):
                 del start_with_nothing
-                return CTCDecoderLMState()
+                state = CTCDecoderLMState()
+                self.outer.histories[state] = self.outer.initial_history
+                return state
 
             def score(self, state, usr_token_idx):
                 word = self.outer.word_for_index(usr_token_idx)
-                # Flashlight's Python binding returns internal LMState objects
-                # during decoding, so Python-side histories are not reliable here.
-                # Use a robust unigram LM score while still applying it during
-                # beam expansion.
-                score = self.outer.word_lm.score_next((), word)
-                return state.child(int(usr_token_idx)), score
+                history = self.outer.histories[state]
+                out_state = state.child(int(usr_token_idx))
+                if out_state not in self.outer.histories:
+                    self.outer.histories[out_state] = self.outer.advance(history, word)
+                return out_state, self.outer.word_lm.score_next(history, word)
 
             def finish(self, state):
-                score = self.outer.word_lm.score_next((), "</s>")
+                score = self.outer.word_lm.score_next(self.outer.histories[state], "</s>")
                 return state, score
 
         self.word_lm = word_lm
         self.lm_dict_words = list(lm_dict_words)
+        self.initial_history = tuple(["<s>"] * max(self.word_lm.order - 1, 0))
+        self.histories = {}
         self.decoder_lm = _LM(self)
+
+    def reset(self):
+        self.histories.clear()
+
+    def advance(self, history, word):
+        history_size = max(self.word_lm.order - 1, 0)
+        if history_size == 0:
+            return ()
+        return tuple((tuple(history) + (word,))[-history_size:])
 
     def word_for_index(self, usr_token_idx):
         if 0 <= int(usr_token_idx) < len(self.lm_dict_words):
@@ -362,44 +380,96 @@ class FlashlightCTCDecoder(nn.Module):
         beam_size=50,
         cutoff_top_n=40,
         temperature=1.0,
+        blank_bias=0.0,
         lm_weight=0.6,
         word_bonus=0.0,
         asset_dir=None,
         kenlm_path=None,
         unigram_path=None,
+        lexicon_unigram_path=None,
+        excluded_words=None,
+        lexicon_free=False,
         max_words=200000,
+        beam_threshold=50.0,
+        log_add=False,
+        emission_cache_dir=None,
+        nbest=1,
+        rescore_lm_weight=0.0,
+        rescore_word_bonus=0.0,
     ):
         super().__init__()
         from torchaudio.models.decoder import ctc_decoder
 
         self.tokenizer = spm.SentencePieceProcessor(tokenizer_path)
         self.temperature = float(temperature)
+        self.blank_bias = float(blank_bias)
         self.labels = ["-"] + [self.tokenizer.id_to_piece(idx) for idx in range(1, self.tokenizer.vocab_size())]
         self.word_lm = lm
         self.kenlm_path = kenlm_path
         self.unigram_path = unigram_path
+        self.excluded_words = {
+            word.lower() for word in (excluded_words or ())
+        }
+        self.lexicon_free = bool(lexicon_free)
         self.max_words = int(max_words)
+        self.nbest = max(1, int(nbest))
+        self.rescore_lm_weight = float(rescore_lm_weight)
+        self.rescore_word_bonus = float(rescore_word_bonus)
+        if (
+            self.rescore_lm_weight != 0.0 or self.rescore_word_bonus != 0.0
+        ) and self.word_lm is None:
+            raise ValueError("N-best LM rescoring requires VOXMM_LM_MANIFEST.")
         self.asset_dir = asset_dir or os.path.join(".tmp", "voxmm_flashlight_decoder")
         os.makedirs(self.asset_dir, exist_ok=True)
-        self.lm_words = self._decoder_words(lm, unigram_path, self.max_words)
-        lexicon_path, lm_dict_path = self._write_assets()
-        flashlight_lm = kenlm_path if kenlm_path else FlashlightUnigramLM(lm, self.lm_words).decoder_lm
+        self.emission_cache_dir = emission_cache_dir
+        self.emission_cache_index = 0
+        if self.emission_cache_dir:
+            os.makedirs(self.emission_cache_dir, exist_ok=True)
+
+        if self.lexicon_free:
+            lexicon_path = None
+            lm_dict_path = None
+            flashlight_lm = None
+            self.python_lm = None
+        else:
+            self.lm_words = self._decoder_words(lm, unigram_path, self.max_words)
+            if lexicon_unigram_path:
+                extra_words = self._decoder_words(lm, lexicon_unigram_path, self.max_words)
+                lexicon_by_spelling = {
+                    word.lower(): word for word in self.lm_words if word != "<unk>"
+                }
+                for word in extra_words:
+                    if word != "<unk>":
+                        lexicon_by_spelling.setdefault(word.lower(), word.lower())
+                self.lexicon_words = ["<unk>"] + sorted(lexicon_by_spelling.values())
+                self.lm_dict_words = self.lexicon_words
+            else:
+                self.lexicon_words = self.lm_words
+                self.lm_dict_words = self.lm_words
+            lexicon_path, lm_dict_path = self._write_assets()
+            self.python_lm = (
+                None
+                if kenlm_path
+                else FlashlightWordNGramLM(lm, self.lm_dict_words)
+            )
+            flashlight_lm = kenlm_path if kenlm_path else self.python_lm.decoder_lm
 
         self.decoder = ctc_decoder(
             lexicon=lexicon_path,
             tokens=self.labels,
             lm=flashlight_lm,
             lm_dict=lm_dict_path,
-            nbest=1,
+            nbest=self.nbest,
             beam_size=int(beam_size),
             beam_size_token=int(cutoff_top_n),
+            beam_threshold=float(beam_threshold),
             lm_weight=float(lm_weight),
             word_score=float(word_bonus),
             unk_score=NEG_INF,
             sil_score=0.0,
-            log_add=False,
+            log_add=bool(log_add),
             blank_token="-",
-            sil_token="-",
+            sil_token="▁" if self.lexicon_free else "-",
             unk_word="<unk>",
         )
 
@@ -411,10 +481,63 @@ class FlashlightCTCDecoder(nn.Module):
         return self.tokenizer.decode(tokens)
 
     def beam_search(self, logits, logits_len):
-        log_probs = (logits.detach().float().cpu() / self.temperature).log_softmax(dim=-1)
+        hypotheses = self._decode_hypotheses(logits, logits_len)
+        return [self._select_hypothesis(item) if item else [] for item in hypotheses]
+
+    def decode_candidates(self, logits, logits_len):
+        hypotheses = self._decode_hypotheses(logits, logits_len)
+        results = []
+        for sample_hypotheses in hypotheses:
+            candidates = []
+            for hypothesis in sample_hypotheses:
+                tokens = self._hypothesis_tokens(hypothesis)
+                candidates.append(
+                    {
+                        "tokens": tokens,
+                        "text": self.tokenizer.decode(tokens),
+                        "score": float(hypothesis.score),
+                    }
+                )
+            results.append(candidates)
+        return results
+
+    def _decode_hypotheses(self, logits, logits_len):
+        if self.emission_cache_dir:
+            cache_path = os.path.join(
+                self.emission_cache_dir,
+                f"batch_{self.emission_cache_index:05d}.pt",
+            )
+            torch.save(
+                {"logits": logits.detach().cpu(), "lengths": logits_len.detach().cpu()},
+                cache_path,
+            )
+            self.emission_cache_index += 1
+        if self.python_lm is not None:
+            self.python_lm.reset()
+        scaled_logits = logits.detach().float().cpu() / self.temperature
+        if self.blank_bias != 0.0:
+            scaled_logits = scaled_logits.clone()
+            scaled_logits[..., 0] += self.blank_bias
+        log_probs = scaled_logits.log_softmax(dim=-1)
         lengths = logits_len.detach().cpu().to(torch.int32)
-        hypotheses = self.decoder(log_probs, lengths)
-        return [self._hypothesis_tokens(item[0]) if item else [] for item in hypotheses]
+        return self.decoder(log_probs, lengths)
+
+    def _select_hypothesis(self, hypotheses):
+        if self.nbest == 1 or (
+            self.rescore_lm_weight == 0.0 and self.rescore_word_bonus == 0.0
+        ):
+            return self._hypothesis_tokens(hypotheses[0])
+
+        def score(hypothesis):
+            tokens = self._hypothesis_tokens(hypothesis)
+            words = self.word_lm.words(self.tokenizer.decode(tokens))
+            return (
+                float(hypothesis.score)
+                + self.rescore_lm_weight * self.word_lm.score_words(words)
+                + self.rescore_word_bonus * len(words)
+            )
+
+        return self._hypothesis_tokens(max(hypotheses, key=score))
 
     def _hypothesis_tokens(self, hypothesis):
         tokens = hypothesis.tokens
@@ -434,6 +557,8 @@ class FlashlightCTCDecoder(nn.Module):
             def usable_word(line):
                 word = line.strip().split()[0] if line.strip() else ""
                 if not word or word.startswith("#") or word.lower() in {"<s>", "</s>", "<unk>"}:
+                    return None
+                if word.lower() in self.excluded_words:
                     return None
                 return word
 
@@ -455,7 +580,12 @@ class FlashlightCTCDecoder(nn.Module):
                 )
             words = [words_by_spelling[spelling] for spelling in sorted(words_by_spelling)]
         else:
-            words = sorted(word for word in lm.vocab if word not in {"<unk>", "</s>"})
+            words = sorted(
+                word
+                for word in lm.vocab
+                if word not in {"<unk>", "</s>"}
+                and word.lower() not in self.excluded_words
+            )
         return ["<unk>"] + words
 
     def _write_assets(self):
@@ -463,11 +593,11 @@ class FlashlightCTCDecoder(nn.Module):
         lm_dict_path = os.path.join(self.asset_dir, "lm_dict.txt")
 
         with open(lm_dict_path, "w", encoding="utf-8") as handle:
-            for word in self.lm_words:
+            for word in self.lm_dict_words:
                 handle.write(f"{word}\n")
 
         with open(lexicon_path, "w", encoding="utf-8") as handle:
-            for word in self.lm_words:
+            for word in self.lexicon_words:
                 if word == "<unk>":
                     continue
                 token_ids = self.tokenizer.encode(word.lower())
@@ -509,7 +639,10 @@ def decoder_options_from_env(prefix="VOXMM"):
         "decoder": os.environ.get(f"{prefix}_DECODER", "greedy").lower(),
         "beam_size": int(os.environ.get(f"{prefix}_BEAM_SIZE", "16")),
         "beam_cutoff_top_n": int(os.environ.get(f"{prefix}_BEAM_CUTOFF_TOP_N", "40")),
+        "beam_threshold": float(os.environ.get(f"{prefix}_BEAM_THRESHOLD", "50.0")),
+        "beam_log_add": os.environ.get(f"{prefix}_BEAM_LOG_ADD", "0").lower() in {"1", "true", "yes", "on"},
         "beam_temperature": float(os.environ.get(f"{prefix}_BEAM_TEMPERATURE", "1.0")),
+        "blank_bias": float(os.environ.get(f"{prefix}_BLANK_BIAS", "0.0")),
         "beam_token_bonus": float(os.environ.get(f"{prefix}_BEAM_TOKEN_BONUS", "0.0")),
         "lm_manifest": os.environ.get(f"{prefix}_LM_MANIFEST") or os.environ.get(f"{prefix}_TRAIN_MANIFEST"),
         "lm_weight": float(os.environ.get(f"{prefix}_LM_WEIGHT", "0.0")),
@@ -521,7 +654,20 @@ def decoder_options_from_env(prefix="VOXMM"):
         "flashlight_asset_dir": os.environ.get(f"{prefix}_FLASHLIGHT_ASSET_DIR", os.path.join(".tmp", "voxmm_flashlight_decoder")),
         "kenlm_path": os.environ.get(f"{prefix}_KENLM_PATH") or os.environ.get(f"{prefix}_NGRAM_PATH"),
         "unigram_path": os.environ.get(f"{prefix}_UNIGRAM_PATH"),
+        "lexicon_unigram_path": os.environ.get(f"{prefix}_LEXICON_UNIGRAM_PATH"),
+        "lexicon_excluded_words": [
+            word
+            for word in re.split(
+                r"[\s,]+",
+                os.environ.get(f"{prefix}_LEXICON_EXCLUDE_WORDS", ""),
+            )
+            if word
+        ],
         "kenlm_max_words": int(os.environ.get(f"{prefix}_KENLM_MAX_WORDS", "200000")),
+        "emission_cache_dir": os.environ.get(f"{prefix}_EMISSION_CACHE_DIR"),
+        "nbest": int(os.environ.get(f"{prefix}_NBEST", "1")),
+        "rescore_lm_weight": float(os.environ.get(f"{prefix}_RESCORE_LM_WEIGHT", "0.0")),
+        "rescore_word_bonus": float(os.environ.get(f"{prefix}_RESCORE_WORD_BONUS", "0.0")),
         "beam_num_processes": int(os.environ.get(f"{prefix}_BEAM_NUM_PROCESSES", "8")),
         "ngram_path": os.environ.get(f"{prefix}_NGRAM_PATH"),
         "ngram_alpha": float(os.environ.get(f"{prefix}_NGRAM_ALPHA", "0.6")),
@@ -555,6 +701,27 @@ def make_ctc_decoder(nnet, tokenizer_path, options=None):
             word_bonus=options["word_bonus"],
         )
 
+    if decoder in {"flashlight_lexicon_free", "lexicon_free", "token_beam"}:
+        lm = _make_lm(options)
+        return FlashlightCTCDecoder(
+            tokenizer_path=tokenizer_path,
+            lm=lm,
+            beam_size=options["beam_size"],
+            cutoff_top_n=options["beam_cutoff_top_n"],
+            temperature=options["beam_temperature"],
+            blank_bias=options["blank_bias"],
+            lm_weight=0.0,
+            word_bonus=0.0,
+            asset_dir=options["flashlight_asset_dir"],
+            beam_threshold=options["beam_threshold"],
+            log_add=options["beam_log_add"],
+            emission_cache_dir=options["emission_cache_dir"],
+            nbest=options["nbest"],
+            rescore_lm_weight=options["rescore_lm_weight"],
+            rescore_word_bonus=options["rescore_word_bonus"],
+            lexicon_free=True,
+        )
+
     if decoder in {"flashlight_lm", "torchaudio_lm"}:
         lm = _make_lm(options)
         return FlashlightCTCDecoder(
@@ -563,9 +730,17 @@ def make_ctc_decoder(nnet, tokenizer_path, options=None):
             beam_size=options["beam_size"],
             cutoff_top_n=options["beam_cutoff_top_n"],
             temperature=options["beam_temperature"],
+            blank_bias=options["blank_bias"],
             lm_weight=options["lm_weight"],
             word_bonus=options["word_bonus"],
             asset_dir=options["flashlight_asset_dir"],
+            excluded_words=options.get("lexicon_excluded_words"),
+            beam_threshold=options["beam_threshold"],
+            log_add=options["beam_log_add"],
+            emission_cache_dir=options["emission_cache_dir"],
+            nbest=options["nbest"],
+            rescore_lm_weight=options["rescore_lm_weight"],
+            rescore_word_bonus=options["rescore_word_bonus"],
         )
 
     if decoder in {"flashlight_kenlm", "kenlm", "hf_kenlm"}:
@@ -581,12 +756,21 @@ def make_ctc_decoder(nnet, tokenizer_path, options=None):
             beam_size=options["beam_size"],
             cutoff_top_n=options["beam_cutoff_top_n"],
             temperature=options["beam_temperature"],
+            blank_bias=options["blank_bias"],
             lm_weight=options["lm_weight"],
             word_bonus=options["word_bonus"],
             asset_dir=options["flashlight_asset_dir"],
+            beam_threshold=options["beam_threshold"],
+            log_add=options["beam_log_add"],
             kenlm_path=kenlm_path,
             unigram_path=options.get("unigram_path"),
+            lexicon_unigram_path=options.get("lexicon_unigram_path"),
+            excluded_words=options.get("lexicon_excluded_words"),
             max_words=options["kenlm_max_words"],
+            emission_cache_dir=options["emission_cache_dir"],
+            nbest=options["nbest"],
+            rescore_lm_weight=options["rescore_lm_weight"],
+            rescore_word_bonus=options["rescore_word_bonus"],
         )
 
     if decoder in {"ctcdecode", "ngram_beam"}:
