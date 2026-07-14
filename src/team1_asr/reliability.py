@@ -13,8 +13,11 @@ import wave
 
 import numpy as np
 import soundfile as sf
+from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.linear_model import Ridge
 
 from team1_asr.evaluation import compute_metrics
+from team1_asr.router_features import extract_features as extract_router_features
 from team1_asr.visual_reliability import (
     is_real_mouth_roi,
     optional_float,
@@ -89,10 +92,60 @@ NOISE_ROUTER_FEATURE_SETS = {
         "mouth_landmark_confidence_p10",
     ],
 }
+NOISE_BENEFIT_ROUTER_CONFIGS = (
+    {
+        "name": "benefit_ridge",
+        "model": "ridge",
+        "features": NOISE_ROUTER_FEATURE_SETS["combined_noise"],
+    },
+    {
+        "name": "benefit_hist_gradient_boosting",
+        "model": "hist_gradient_boosting",
+        "features": NOISE_ROUTER_FEATURE_SETS["combined_noise"],
+    },
+)
+ENRICHED_WHISPER_FEATURES = [
+    *COMPACT_LEARNED_FEATURE_SETS["audio_compact"],
+    "audio_compression_ratio_mean",
+    "audio_compression_ratio_max",
+    "audio_segment_count",
+    "audio_avg_logprob_std",
+    "audio_temperature_mean",
+]
+ENRICHED_MULTIMODAL_FEATURES = [
+    *ENRICHED_WHISPER_FEATURES,
+    "audio_rms_p10_dbfs",
+    "audio_rms_p50_dbfs",
+    "audio_rms_p90_dbfs",
+    "audio_rms_dynamic_range_db",
+    "audio_silence_fraction",
+    "audio_zero_crossing_rate",
+    "audio_spectral_centroid_hz",
+    "audio_spectral_bandwidth_hz",
+    "audio_spectral_rolloff_hz",
+    "audio_spectral_flatness",
+    "audio_high_frequency_energy_ratio",
+    "video_mouth_motion_mean",
+    "video_mouth_motion_p10",
+    "video_mouth_motion_p90",
+    "video_still_frame_rate",
+    "video_luminance_mean",
+    "video_luminance_std",
+    "video_contrast_mean",
+    "video_sharpness_mean",
+    "video_roi_frame_rate",
+    "audio_video_sync_correlation",
+    "audio_video_sync_lag_ms",
+    "mouth_landmark_confidence_mean",
+    "mouth_landmark_confidence_p10",
+]
+NOISE_STUDY_BOOTSTRAP_SAMPLES = 1000
 STUDY_L2_STRENGTHS = (0.3, 1.0, 3.0)
 STUDY_CLASS_WEIGHTS = ("unweighted",)
 LEARNED_POLICY_TYPE = "learned_logistic"
 LEARNED_POLICY_VERSION = 1
+BENEFIT_POLICY_TYPE = "benefit_regression"
+BENEFIT_POLICY_VERSION = 1
 DEFAULT_AUDIO_SYSTEM = "audio"
 DEFAULT_AV_SYSTEM = "audio_visual"
 
@@ -135,11 +188,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Repeat for clean, demand_10db, demand_0db, and demand_-5db.",
     )
     noise_study.add_argument("--output-dir", required=True)
+    noise_study.add_argument(
+        "--features",
+        help="Optional routing_features.csv written by extract-features.",
+    )
     noise_study.add_argument("--audio-system-name", default=DEFAULT_AUDIO_SYSTEM)
     noise_study.add_argument("--av-system-name", default=DEFAULT_AV_SYSTEM)
     noise_study.add_argument("--folds", type=int, default=5)
     noise_study.add_argument("--inner-folds", type=int, default=4)
     noise_study.add_argument("--seed", type=int, default=0)
+
+    extract_features = subparsers.add_parser("extract-features")
+    extract_features.add_argument("--roi-manifest", required=True)
+    extract_features.add_argument("--reliability", required=True)
+    extract_features.add_argument(
+        "--condition",
+        action="append",
+        nargs=2,
+        metavar=("NAME", "WHISPER_TRANSCRIPTS"),
+        required=True,
+    )
+    extract_features.add_argument("--output-dir", required=True)
 
     split = subparsers.add_parser("split")
     split.add_argument("--source-manifest", required=True)
@@ -225,12 +294,23 @@ def main() -> None:
             reliability_path=Path(args.reliability),
             conditions=[(name, Path(audio), Path(av)) for name, audio, av in args.condition],
             output_dir=Path(args.output_dir),
+            features_path=Path(args.features) if args.features else None,
             audio_system_name=args.audio_system_name,
             av_system_name=args.av_system_name,
             folds=args.folds,
             inner_folds=args.inner_folds,
             seed=args.seed,
         )
+    elif args.command == "extract-features":
+        paths = extract_router_features(
+            roi_manifest_path=Path(args.roi_manifest),
+            reliability_path=Path(args.reliability),
+            conditions=[(name, Path(transcripts)) for name, transcripts in args.condition],
+            output_dir=Path(args.output_dir),
+        )
+        print(f"Wrote routing features: {paths['features']}")
+        print(f"Wrote feature summary: {paths['summary']}")
+        print(f"Wrote feature summary JSON: {paths['summary_json']}")
     elif args.command == "split":
         split_manifests(
             source_manifest_path=Path(args.source_manifest),
@@ -695,6 +775,7 @@ def noise_study(
     reliability_path: Path,
     conditions: list[tuple[str, Path, Path]],
     output_dir: Path,
+    features_path: Path | None = None,
     audio_system_name: str = DEFAULT_AUDIO_SYSTEM,
     av_system_name: str = DEFAULT_AV_SYSTEM,
     folds: int = 5,
@@ -712,82 +793,106 @@ def noise_study(
         raise ValueError("--folds and --inner-folds must both be at least 2.")
 
     inputs = _load_noise_study_inputs(
-        manifest_path, reliability_path, conditions, audio_system_name
+        manifest_path,
+        reliability_path,
+        conditions,
+        audio_system_name,
+        features_path=features_path,
     )
     outer_folds = _grouped_folds(list(inputs["rows"]), folds=folds, seed=seed)
     all_ids = set(inputs["rows"])
     summary_rows: list[dict[str, object]] = []
     decision_rows: list[dict[str, object]] = []
     config_results: dict[str, dict[str, object]] = {}
+    decisions_by_configuration: dict[str, list[dict[str, object]]] = {}
 
-    for config_index, (feature_set, features) in enumerate(NOISE_ROUTER_FEATURE_SETS.items()):
-        decisions: list[dict[str, object]] = []
-        thresholds: list[float] = []
-        for fold_index, validation_ids in enumerate(outer_folds):
-            training_inputs = _subset_inputs(inputs, all_ids - set(validation_ids))
-            validation_inputs = _subset_inputs(inputs, set(validation_ids))
-            threshold = _nested_probability_threshold(
-                training_inputs,
-                features=features,
-                l2_strength=1.0,
-                class_weight="unweighted",
-                folds=inner_folds,
-                seed=seed + config_index * 100 + fold_index,
-                audio_system_name=audio_system_name,
-                av_system_name=av_system_name,
-            )
-            policy = _fit_learned_policy(
-                training_inputs,
-                feature_candidates=features,
-                l2_strength=1.0,
-                class_weight="unweighted",
-            )
-            policy.update(
-                {
-                    "threshold": threshold,
-                    "audio_system": audio_system_name,
-                    "av_system": av_system_name,
-                }
-            )
-            result = _route(validation_inputs, policy)
-            thresholds.append(threshold)
-            for row in result["decisions"]:
-                decisions.append(row)
-                decision_rows.append(
-                    {
-                        "configuration": feature_set,
-                        "fold": fold_index,
-                        "nested_threshold": threshold,
-                        **row,
-                    }
-                )
+    feature_sets = dict(NOISE_ROUTER_FEATURE_SETS)
+    benefit_configs = list(NOISE_BENEFIT_ROUTER_CONFIGS)
+    if features_path is not None:
+        feature_sets["whisper_enriched"] = ENRICHED_WHISPER_FEATURES
+        feature_sets["multimodal_enriched"] = ENRICHED_MULTIMODAL_FEATURES
+        benefit_configs.append(
+            {
+                "name": "multimodal_enriched_hist_gradient_boosting",
+                "model": "hist_gradient_boosting",
+                "features": ENRICHED_MULTIMODAL_FEATURES,
+            }
+        )
 
-        overall = _decision_summary(decisions, av_system_name)
-        by_condition = {
-            condition: _decision_summary(
-                [row for row in decisions if row.get("condition") == condition],
-                av_system_name,
-            )
-            for condition, _, _ in conditions
-        }
-        summary = {
-            "configuration": feature_set,
-            "features": features,
-            "nested_threshold_mean": sum(thresholds) / len(thresholds),
-            "overall": overall,
-            "by_condition": by_condition,
-        }
+    for config_index, (feature_set, features) in enumerate(feature_sets.items()):
+        summary, decisions = _run_noise_router_configuration(
+            inputs=inputs,
+            outer_folds=outer_folds,
+            all_ids=all_ids,
+            name=feature_set,
+            model="logistic",
+            features=features,
+            conditions=conditions,
+            inner_folds=inner_folds,
+            seed=seed + config_index * 100,
+            audio_system_name=audio_system_name,
+            av_system_name=av_system_name,
+        )
         config_results[feature_set] = summary
-        for condition, condition_summary in by_condition.items():
+        decisions_by_configuration[feature_set] = decisions
+
+    offset = len(feature_sets)
+    for config_index, config in enumerate(benefit_configs, start=offset):
+        name = str(config["name"])
+        summary, decisions = _run_noise_router_configuration(
+            inputs=inputs,
+            outer_folds=outer_folds,
+            all_ids=all_ids,
+            name=name,
+            model=str(config["model"]),
+            features=list(config["features"]),
+            conditions=conditions,
+            inner_folds=inner_folds,
+            seed=seed + config_index * 100,
+            audio_system_name=audio_system_name,
+            av_system_name=av_system_name,
+        )
+        config_results[name] = summary
+        decisions_by_configuration[name] = decisions
+
+    baseline_name = "combined_noise"
+    baseline_decisions = decisions_by_configuration[baseline_name]
+    for name, summary in config_results.items():
+        comparison = _bootstrap_router_comparison(
+            baseline_decisions,
+            decisions_by_configuration[name],
+            seed=seed,
+            conditions=[condition for condition, _, _ in conditions],
+        )
+        summary["comparison_vs_combined_noise"] = comparison
+        summary["meaningful_improvement"] = _is_meaningful_noise_improvement(
+            summary,
+            config_results[baseline_name],
+        )
+        for condition, condition_summary in summary["by_condition"].items():
+            condition_comparison = comparison["by_condition"][condition]
             summary_rows.append(
                 {
-                    "configuration": feature_set,
+                    "configuration": name,
+                    "model": summary["model"],
                     "condition": condition,
                     "snr_db": _condition_snr_db(condition),
                     "nested_threshold_mean": summary["nested_threshold_mean"],
+                    "meaningful_improvement": summary["meaningful_improvement"],
+                    "wer_reduction_vs_combined_noise_pp": condition_comparison[
+                        "wer_reduction_pp"
+                    ],
+                    "wer_reduction_ci_95_low_pp": condition_comparison[
+                        "ci_95_low_pp"
+                    ],
+                    "wer_reduction_ci_95_high_pp": condition_comparison[
+                        "ci_95_high_pp"
+                    ],
                     **condition_summary,
                 }
             )
+        for row in decisions_by_configuration[name]:
+            decision_rows.append({"configuration": name, **row})
 
     best_name = min(
         config_results,
@@ -804,15 +909,129 @@ def noise_study(
                 {"name": name, "snr_db": _condition_snr_db(name)}
                 for name, _, _ in conditions
             ],
-            "feature_sets": NOISE_ROUTER_FEATURE_SETS,
+            "feature_sets": feature_sets,
+            "benefit_router_configurations": benefit_configs,
+            "features_path": str(features_path) if features_path else None,
             "outer_folds": len(outer_folds),
             "inner_folds": inner_folds,
             "seed": seed,
+            "bootstrap_samples": NOISE_STUDY_BOOTSTRAP_SAMPLES,
+            "baseline_configuration": baseline_name,
             "best_configuration": best_name,
+            "recommended_configuration": (
+                best_name if best["meaningful_improvement"] else None
+            ),
             "configurations": config_results,
         },
     )
     return {"best_configuration": best_name, "overall": best["overall"]}
+
+
+def _run_noise_router_configuration(
+    *,
+    inputs: dict[str, object],
+    outer_folds: list[list[str]],
+    all_ids: set[str],
+    name: str,
+    model: str,
+    features: list[str],
+    conditions: list[tuple[str, Path, Path]],
+    inner_folds: int,
+    seed: int,
+    audio_system_name: str,
+    av_system_name: str,
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    decisions: list[dict[str, object]] = []
+    thresholds: list[float] = []
+    for fold_index, validation_ids in enumerate(outer_folds):
+        training_inputs = _subset_inputs(inputs, all_ids - set(validation_ids))
+        validation_inputs = _subset_inputs(inputs, set(validation_ids))
+        fold_seed = seed + fold_index
+        if model == "logistic":
+            threshold = _nested_probability_threshold(
+                training_inputs,
+                features=features,
+                l2_strength=1.0,
+                class_weight="unweighted",
+                folds=inner_folds,
+                seed=fold_seed,
+                audio_system_name=audio_system_name,
+                av_system_name=av_system_name,
+            )
+            policy = _fit_learned_policy(
+                training_inputs,
+                feature_candidates=features,
+                l2_strength=1.0,
+                class_weight="unweighted",
+            )
+        else:
+            threshold = _nested_benefit_threshold(
+                training_inputs,
+                features=features,
+                model=model,
+                folds=inner_folds,
+                seed=fold_seed,
+                audio_system_name=audio_system_name,
+                av_system_name=av_system_name,
+            )
+            policy = _fit_benefit_policy(
+                training_inputs,
+                feature_candidates=features,
+                model=model,
+                seed=fold_seed,
+            )
+        policy.update(
+            {
+                "threshold": threshold,
+                "audio_system": audio_system_name,
+                "av_system": av_system_name,
+            }
+        )
+        result = _route(validation_inputs, policy)
+        thresholds.append(threshold)
+        decisions.extend(
+            {
+                "fold": fold_index,
+                "nested_threshold": threshold,
+                **row,
+            }
+            for row in result["decisions"]
+        )
+
+    overall = _decision_summary(decisions, av_system_name)
+    by_condition = {
+        condition: _decision_summary(
+            [row for row in decisions if row.get("condition") == condition],
+            av_system_name,
+        )
+        for condition, _, _ in conditions
+    }
+    if model == "logistic":
+        diagnostic_policy = _fit_learned_policy(
+            inputs,
+            feature_candidates=features,
+            l2_strength=1.0,
+            class_weight="unweighted",
+        )
+    else:
+        diagnostic_policy = _fit_benefit_policy(
+            inputs,
+            feature_candidates=features,
+            model=model,
+            seed=seed,
+        )
+    return (
+        {
+            "configuration": name,
+            "model": model,
+            "features": features,
+            "nested_threshold_mean": sum(thresholds) / len(thresholds),
+            "feature_metadata": _study_feature_metadata(diagnostic_policy),
+            "overall": overall,
+            "by_condition": by_condition,
+        },
+        decisions,
+    )
 
 
 def _outer_threshold_decisions(
@@ -864,10 +1083,42 @@ def _nested_probability_threshold(
             }
         )
         decisions.extend(_route(validation_inputs, policy)["decisions"])
-    return _select_probability_threshold(decisions)
+    return _select_routing_threshold(decisions)
 
 
-def _select_probability_threshold(decisions: list[dict[str, object]]) -> float:
+def _nested_benefit_threshold(
+    inputs: dict[str, object],
+    *,
+    features: list[str],
+    model: str,
+    folds: int,
+    seed: int,
+    audio_system_name: str,
+    av_system_name: str,
+) -> float:
+    inner_folds = _grouped_folds(list(inputs["rows"]), folds=folds, seed=seed)
+    all_ids = set(inputs["rows"])
+    decisions = []
+    for fold_index, validation_ids in enumerate(inner_folds):
+        training_inputs = _subset_inputs(inputs, all_ids - set(validation_ids))
+        validation_inputs = _subset_inputs(inputs, set(validation_ids))
+        policy = _fit_benefit_policy(
+            training_inputs,
+            feature_candidates=features,
+            model=model,
+            seed=seed + fold_index,
+        )
+        policy.update(
+            {
+                "audio_system": audio_system_name,
+                "av_system": av_system_name,
+            }
+        )
+        decisions.extend(_route(validation_inputs, policy)["decisions"])
+    return _select_routing_threshold(decisions)
+
+
+def _select_routing_threshold(decisions: list[dict[str, object]]) -> float:
     scores = sorted(
         {
             score
@@ -877,9 +1128,10 @@ def _select_probability_threshold(decisions: list[dict[str, object]]) -> float:
         }
     )
     if not scores:
-        return 1.1
+        return float("inf")
+    fallback_threshold = max(scores) + 1.0
     best: tuple[int, int, float] | None = None
-    for threshold in [1.1, *scores]:
+    for threshold in [fallback_threshold, *scores]:
         total_errors = 0
         av_selected = 0
         for row in decisions:
@@ -905,7 +1157,14 @@ def _decision_summary(
     references = [str(row["reference"]) for row in decisions]
     audio_predictions = [str(row["audio_prediction"]) for row in decisions]
     routed_predictions = [str(row["selected_prediction"]) for row in decisions]
+    oracle_predictions = [
+        str(row["audio_visual_prediction"])
+        if row["oracle_system"] == av_system_name
+        else str(row["audio_prediction"])
+        for row in decisions
+    ]
     routed_metrics = _metrics_dict(references, routed_predictions)
+    oracle_metrics = _metrics_dict(references, oracle_predictions)
     routed_to_av = [row["selected_system"] == av_system_name for row in decisions]
     av_wins = [
         bool(row["audio_visual_prediction"])
@@ -917,6 +1176,11 @@ def _decision_summary(
         "audio_wer": _metrics_dict(references, audio_predictions)["wer"],
         "routed_wer": routed_metrics["wer"],
         "routed_cer": routed_metrics["cer"],
+        "oracle_wer": oracle_metrics["wer"],
+        "oracle_cer": oracle_metrics["cer"],
+        "router_to_oracle_gap_wer": _metric_gap(
+            routed_metrics, oracle_metrics, "wer"
+        ),
         "routed_to_audio_visual_count": sum(routed_to_av),
         "routed_to_audio_visual_rate": (
             sum(routed_to_av) / len(decisions) if decisions else 0.0
@@ -928,6 +1192,101 @@ def _decision_summary(
             not routed and av_win for routed, av_win in zip(routed_to_av, av_wins)
         ),
     }
+
+
+def _bootstrap_router_comparison(
+    baseline: list[dict[str, object]],
+    candidate: list[dict[str, object]],
+    *,
+    seed: int,
+    conditions: list[str],
+) -> dict[str, object]:
+    baseline_by_id = {str(row["utterance_id"]): row for row in baseline}
+    candidate_by_id = {str(row["utterance_id"]): row for row in candidate}
+    if set(baseline_by_id) != set(candidate_by_id):
+        raise ValueError("Router configurations do not cover the same utterances.")
+    return {
+        "overall": _bootstrap_wer_reduction(
+            baseline_by_id, candidate_by_id, seed=seed
+        ),
+        "by_condition": {
+            condition: _bootstrap_wer_reduction(
+                baseline_by_id,
+                candidate_by_id,
+                seed=seed + index + 1,
+                condition=condition,
+            )
+            for index, condition in enumerate(conditions)
+        },
+    }
+
+
+def _bootstrap_wer_reduction(
+    baseline: dict[str, dict[str, object]],
+    candidate: dict[str, dict[str, object]],
+    *,
+    seed: int,
+    condition: str | None = None,
+) -> dict[str, object]:
+    by_video: dict[str, list[float]] = {}
+    for utterance_id in sorted(baseline):
+        baseline_row = baseline[utterance_id]
+        candidate_row = candidate[utterance_id]
+        if condition is not None and baseline_row.get("condition") != condition:
+            continue
+        reference_words = _word_error_stats(
+            str(baseline_row["reference"]), str(baseline_row["audio_prediction"])
+        )[1]
+        if reference_words == 0:
+            continue
+        video_id = _source_video_id(utterance_id)
+        totals = by_video.setdefault(video_id, [0.0, 0.0, 0.0])
+        totals[0] += float(baseline_row["selected_word_errors"])
+        totals[1] += float(candidate_row["selected_word_errors"])
+        totals[2] += reference_words
+    if not by_video:
+        return {
+            "wer_reduction_pp": 0.0,
+            "ci_95_low_pp": 0.0,
+            "ci_95_high_pp": 0.0,
+            "source_videos": 0,
+        }
+    values = np.array(list(by_video.values()), dtype=float)
+    baseline_errors, candidate_errors, words = values.sum(axis=0)
+    point_estimate = 100.0 * (baseline_errors - candidate_errors) / words
+    random_state = np.random.default_rng(seed)
+    samples = random_state.integers(
+        0,
+        len(values),
+        size=(NOISE_STUDY_BOOTSTRAP_SAMPLES, len(values)),
+    )
+    sampled = values[samples].sum(axis=1)
+    reductions = 100.0 * (sampled[:, 0] - sampled[:, 1]) / sampled[:, 2]
+    low, high = np.percentile(reductions, [2.5, 97.5])
+    return {
+        "wer_reduction_pp": float(point_estimate),
+        "ci_95_low_pp": float(low),
+        "ci_95_high_pp": float(high),
+        "source_videos": len(values),
+    }
+
+
+def _is_meaningful_noise_improvement(
+    candidate: dict[str, object], baseline: dict[str, object]
+) -> bool:
+    if candidate["configuration"] == baseline["configuration"]:
+        return False
+    comparison = candidate["comparison_vs_combined_noise"]["overall"]
+    if comparison["ci_95_low_pp"] <= 0.0:
+        return False
+    candidate_conditions = candidate["by_condition"]
+    baseline_conditions = baseline["by_condition"]
+    return all(
+        float(candidate_conditions[condition]["routed_wer"])
+        <= float(baseline_conditions[condition]["routed_wer"])
+        for condition in ("demand_0db", "demand_-5db")
+        if condition in candidate_conditions and condition in baseline_conditions
+    )
 
 
 def _fit_learned_policy(
@@ -1045,6 +1404,160 @@ def _fit_learned_policy(
         "training_utterances": len(eligible),
         "training_audio_visual_wins": int(positives),
     }
+
+
+def _fit_benefit_policy(
+    inputs: dict[str, object],
+    *,
+    feature_candidates: list[str],
+    model: str,
+    seed: int,
+) -> dict[str, object]:
+    if model not in {"ridge", "hist_gradient_boosting"}:
+        raise ValueError(f"Unsupported benefit router model: {model}")
+    eligible = []
+    for utterance_id, manifest_row in inputs["rows"].items():
+        reference = str(manifest_row.get("reference", ""))
+        av_prediction = inputs["av"].get(utterance_id, {}).get("prediction")
+        reliability_row = inputs["reliability"].get(utterance_id, {})
+        if not reference or not is_real_mouth_roi(reliability_row) or av_prediction is None:
+            continue
+        audio_prediction = str(inputs["audio"][utterance_id]["prediction"])
+        audio_errors, _ = _word_error_stats(reference, audio_prediction)
+        av_errors, _ = _word_error_stats(reference, str(av_prediction))
+        eligible.append(
+            (
+                _feature_row(reliability_row, inputs["audio"][utterance_id]),
+                _benefit_target(audio_errors, av_errors),
+            )
+        )
+    if len(eligible) < 4:
+        raise ValueError("Need at least four AVEC-ready utterances for benefit routing.")
+
+    feature_names = [
+        feature
+        for feature in feature_candidates
+        if any(optional_float(feature_row.get(feature)) is not None for feature_row, _ in eligible)
+    ]
+    if not feature_names:
+        raise ValueError("No numeric benefit-routing features are available.")
+    medians = {
+        feature: float(
+            statistics.median(
+                optional_float(feature_row.get(feature))
+                for feature_row, _ in eligible
+                if optional_float(feature_row.get(feature)) is not None
+            )
+        )
+        for feature in feature_names
+    }
+    raw = np.array(
+        [
+            [
+                optional_float(feature_row.get(feature))
+                if optional_float(feature_row.get(feature)) is not None
+                else medians[feature]
+                for feature in feature_names
+            ]
+            for feature_row, _ in eligible
+        ],
+        dtype=float,
+    )
+    targets = np.array([target for _, target in eligible], dtype=float)
+    policy: dict[str, object] = {
+        "policy_type": BENEFIT_POLICY_TYPE,
+        "feature_family": "combined",
+        "feature": None,
+        "direction": "higher",
+        "threshold": 0.0,
+        "model_version": BENEFIT_POLICY_VERSION,
+        "benefit_model": model,
+        "feature_names": feature_names,
+        "feature_medians": medians,
+        "training_utterances": len(eligible),
+    }
+    if model == "ridge":
+        means = raw.mean(axis=0)
+        scales = raw.std(axis=0)
+        scales[scales < 1e-12] = 1.0
+        estimator = Ridge(alpha=1.0)
+        estimator.fit((raw - means) / scales, targets)
+        policy.update(
+            {
+                "estimator": estimator,
+                "feature_means": {
+                    feature: float(value) for feature, value in zip(feature_names, means)
+                },
+                "feature_scales": {
+                    feature: float(value) for feature, value in zip(feature_names, scales)
+                },
+                "coefficients": {
+                    feature: float(value)
+                    for feature, value in zip(feature_names, estimator.coef_)
+                },
+            }
+        )
+    else:
+        estimator = HistGradientBoostingRegressor(
+            learning_rate=0.05,
+            max_iter=50,
+            max_leaf_nodes=7,
+            min_samples_leaf=20,
+            l2_regularization=1.0,
+            random_state=seed,
+        )
+        estimator.fit(raw, targets)
+        policy.update(
+            {
+                "estimator": estimator,
+                "feature_importances": _permutation_importances(
+                    estimator,
+                    raw,
+                    targets,
+                    feature_names,
+                    seed,
+                ),
+            }
+        )
+    return policy
+
+
+def _permutation_importances(
+    estimator: HistGradientBoostingRegressor,
+    features: np.ndarray,
+    targets: np.ndarray,
+    feature_names: list[str],
+    seed: int,
+) -> dict[str, float]:
+    baseline_error = float(np.mean((estimator.predict(features) - targets) ** 2))
+    randomizer = np.random.default_rng(seed)
+    importances: dict[str, float] = {}
+    for index, feature in enumerate(feature_names):
+        shuffled = features.copy()
+        shuffled[:, index] = randomizer.permutation(shuffled[:, index])
+        shuffled_error = float(
+            np.mean((estimator.predict(shuffled) - targets) ** 2)
+        )
+        importances[feature] = shuffled_error - baseline_error
+    return importances
+
+
+def _study_feature_metadata(policy: dict[str, object]) -> dict[str, object]:
+    metadata: dict[str, object] = {
+        "feature_names": list(policy.get("feature_names", [])),
+    }
+    coefficients = policy.get("coefficients")
+    if isinstance(coefficients, dict):
+        metadata["coefficients"] = coefficients
+    importances = policy.get("feature_importances")
+    if isinstance(importances, dict):
+        metadata["importances"] = importances
+    return metadata
+
+
+def _benefit_target(audio_errors: int, av_errors: int) -> float:
+    """Positive values mean AVEC reduced the utterance's word errors."""
+    return float(audio_errors - av_errors)
 
 
 def _fit_logistic_regression(
@@ -1606,6 +2119,10 @@ def _policy_selects_av(
         probability = _learned_probability(policy, reliability_row)
         threshold = optional_float(policy.get("threshold"))
         return probability is not None and threshold is not None and probability >= threshold
+    if policy.get("policy_type") == BENEFIT_POLICY_TYPE:
+        benefit = _benefit_prediction(policy, reliability_row)
+        threshold = optional_float(policy.get("threshold"))
+        return benefit is not None and threshold is not None and benefit >= threshold
     feature = str(policy.get("feature") or "")
     threshold = optional_float(policy.get("threshold"))
     value = optional_float(reliability_row.get(feature))
@@ -1620,6 +2137,9 @@ def _policy_score(policy: dict[str, object], feature_row: dict[str, object]) -> 
     if policy.get("policy_type") == LEARNED_POLICY_TYPE:
         probability = _learned_probability(policy, feature_row)
         return "" if probability is None else probability
+    if policy.get("policy_type") == BENEFIT_POLICY_TYPE:
+        benefit = _benefit_prediction(policy, feature_row)
+        return "" if benefit is None else benefit
     feature = policy.get("feature")
     return feature_row.get(str(feature), "") if feature else ""
 
@@ -1664,6 +2184,49 @@ def _learned_probability(
     return 1.0 / (1.0 + math.exp(-logit))
 
 
+def _benefit_prediction(
+    policy: dict[str, object], feature_row: dict[str, object]
+) -> float | None:
+    feature_names = policy.get("feature_names")
+    medians = policy.get("feature_medians")
+    estimator = policy.get("estimator")
+    model = policy.get("benefit_model")
+    if (
+        not isinstance(feature_names, list)
+        or not isinstance(medians, dict)
+        or estimator is None
+        or model not in {"ridge", "hist_gradient_boosting"}
+    ):
+        return None
+    values = []
+    for feature in feature_names:
+        if not isinstance(feature, str):
+            return None
+        median = optional_float(medians.get(feature))
+        if median is None:
+            return None
+        value = optional_float(feature_row.get(feature))
+        values.append(median if value is None else value)
+    features = np.array([values], dtype=float)
+    if model == "ridge":
+        means = policy.get("feature_means")
+        scales = policy.get("feature_scales")
+        if not isinstance(means, dict) or not isinstance(scales, dict):
+            return None
+        normalized = []
+        for index, feature in enumerate(feature_names):
+            mean = optional_float(means.get(feature))
+            scale = optional_float(scales.get(feature))
+            if mean is None or scale is None or scale <= 0:
+                return None
+            normalized.append((features[0, index] - mean) / scale)
+        features = np.array([normalized], dtype=float)
+    try:
+        return float(estimator.predict(features)[0])
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def _validate_policy(policy: dict[str, object]) -> None:
     if _policy_audio_system(policy) == _policy_av_system(policy):
         raise ValueError("Audio and audio-visual system names must be different.")
@@ -1677,6 +2240,14 @@ def _validate_policy(policy: dict[str, object]) -> None:
             raise ValueError("Learned reliability policy has no probability threshold.")
         if _learned_probability(policy, {}) is None:
             raise ValueError("Learned reliability policy has an invalid model.")
+        return
+    if policy_type == BENEFIT_POLICY_TYPE:
+        if _policy_feature_family(policy) != "combined":
+            raise ValueError("Benefit routers must use combined features.")
+        if optional_float(policy.get("threshold")) is None:
+            raise ValueError("Benefit router has no numeric threshold.")
+        if _benefit_prediction(policy, {}) is None:
+            raise ValueError("Benefit router has an invalid model.")
         return
     if policy_type != "threshold":
         raise ValueError(f"Unsupported reliability policy: {policy_type}")
@@ -1821,9 +2392,12 @@ def _load_noise_study_inputs(
     reliability_path: Path,
     conditions: list[tuple[str, Path, Path]],
     audio_system_name: str,
+    *,
+    features_path: Path | None = None,
 ) -> dict[str, object]:
     manifest_rows = _read_csv_by_id(manifest_path)
     reliability_rows = _read_csv_by_id(reliability_path)
+    external_features = _read_noise_features(features_path) if features_path else {}
     names = [name for name, _, _ in conditions]
     if len(set(names)) != len(names):
         raise ValueError("Noise-study condition names must be unique.")
@@ -1854,10 +2428,36 @@ def _load_noise_study_inputs(
                 if path not in waveform_cache:
                     waveform_cache[path] = _waveform_features(path)
                 audio_row.update(waveform_cache[path])
+            if features_path is not None:
+                feature_row = external_features.get(key)
+                if feature_row is None:
+                    raise ValueError(
+                        f"Extracted routing features are missing {condition}/{utterance_id}"
+                    )
+                audio_row.update(feature_row)
             audio[key] = audio_row
             if utterance_id in av_transcripts:
                 av[key] = dict(av_transcripts[utterance_id])
     return {"rows": rows, "reliability": reliability, "audio": audio, "av": av}
+
+
+def _read_noise_features(path: Path) -> dict[str, dict[str, object]]:
+    rows: dict[str, dict[str, object]] = {}
+    with path.open(encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle):
+            condition = str(row.get("condition") or "")
+            utterance_id = str(row.get("utterance_id") or "")
+            if not condition or not utterance_id:
+                raise ValueError(f"Feature row in {path} needs condition and utterance_id")
+            key = f"{condition}::{utterance_id}"
+            if key in rows:
+                raise ValueError(f"Duplicate feature row in {path}: {key}")
+            rows[key] = {
+                feature: value
+                for feature, value in row.items()
+                if feature not in {"condition", "utterance_id"}
+            }
+    return rows
 
 
 def _waveform_features(path: Path) -> dict[str, float | None]:

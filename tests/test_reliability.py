@@ -9,6 +9,7 @@ import unittest
 import wave
 
 from team1_asr.reliability import (
+    _benefit_target,
     calibrate,
     diagnose_failures,
     evaluate,
@@ -20,6 +21,11 @@ from team1_asr.reliability import (
 
 
 class ReliabilityTest(unittest.TestCase):
+    def test_benefit_target_represents_expected_av_error_reduction(self) -> None:
+        self.assertEqual(_benefit_target(5, 2), 3.0)
+        self.assertEqual(_benefit_target(3, 3), 0.0)
+        self.assertEqual(_benefit_target(1, 4), -3.0)
+
     def test_calibrates_detection_threshold_and_writes_reports(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             paths = _write_fixture(Path(temp_dir))
@@ -532,10 +538,12 @@ class ReliabilityTest(unittest.TestCase):
                 "whisper_confidence",
                 "audio_quality",
                 "combined_noise",
+                "benefit_ridge",
+                "benefit_hist_gradient_boosting",
             })
             with (output_dir / "noise_router_decisions.csv").open() as handle:
                 decisions = list(csv.DictReader(handle))
-            self.assertEqual(len(decisions), 30)
+            self.assertEqual(len(decisions), 50)
             for configuration in {row["configuration"] for row in decisions}:
                 rows = [row for row in decisions if row["configuration"] == configuration]
                 for video_index in range(5):
@@ -547,8 +555,100 @@ class ReliabilityTest(unittest.TestCase):
                     self.assertEqual(len(folds), 1)
             with (output_dir / "noise_router_metrics.csv").open() as handle:
                 metrics = list(csv.DictReader(handle))
-            self.assertEqual(len(metrics), 6)
+            self.assertEqual(len(metrics), 10)
             self.assertEqual({row["condition"] for row in metrics}, {"clean", "demand_-5db"})
+            self.assertTrue(
+                all("oracle_wer" in row and "router_to_oracle_gap_wer" in row for row in metrics)
+            )
+            study_json = json.loads((output_dir / "noise_router_study.json").read_text())
+            self.assertEqual(study_json["bootstrap_samples"], 1000)
+            self.assertIn(
+                "comparison_vs_combined_noise",
+                study_json["configurations"]["benefit_ridge"],
+            )
+
+    def test_noise_study_boosted_tree_is_deterministic_and_imputes_missing_features(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest, reliability, conditions = _write_noise_study_fixture(root)
+            with reliability.open(newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            rows[0]["mouth_landmark_confidence_p10"] = ""
+            with reliability.open("w", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
+                writer.writeheader()
+                writer.writerows(rows)
+
+            first = root / "first"
+            second = root / "second"
+            noise_study(manifest, reliability, conditions, first, folds=5, inner_folds=2, seed=3)
+            noise_study(manifest, reliability, conditions, second, folds=5, inner_folds=2, seed=3)
+
+            def boosted_decisions(path: Path) -> list[tuple[str, str, str]]:
+                with (path / "noise_router_decisions.csv").open() as handle:
+                    return [
+                        (row["utterance_id"], row["selected_system"], row["nested_threshold"])
+                        for row in csv.DictReader(handle)
+                        if row["configuration"] == "benefit_hist_gradient_boosting"
+                    ]
+
+            self.assertEqual(boosted_decisions(first), boosted_decisions(second))
+
+    def test_noise_study_accepts_extracted_features(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest, reliability, conditions = _write_noise_study_fixture(root)
+            features = root / "routing_features.csv"
+            with features.open("w", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "condition",
+                        "utterance_id",
+                        "audio_compression_ratio_mean",
+                        "video_mouth_motion_mean",
+                    ],
+                )
+                writer.writeheader()
+                for condition, _, _ in conditions:
+                    for index in range(5):
+                        writer.writerow(
+                            {
+                                "condition": condition,
+                                "utterance_id": f"video{index}_00000",
+                                "audio_compression_ratio_mean": 1.0 + index / 10,
+                                "video_mouth_motion_mean": index / 10,
+                            }
+                        )
+
+            result = noise_study(
+                manifest,
+                reliability,
+                conditions,
+                root / "noise-study",
+                features_path=features,
+                folds=5,
+                inner_folds=2,
+                seed=1,
+            )
+
+            self.assertIn(result["best_configuration"], {
+                "whisper_confidence",
+                "audio_quality",
+                "combined_noise",
+                "whisper_enriched",
+                "multimodal_enriched",
+                "benefit_ridge",
+                "benefit_hist_gradient_boosting",
+                "multimodal_enriched_hist_gradient_boosting",
+            })
+            study = json.loads(
+                (root / "noise-study" / "noise_router_study.json").read_text()
+            )
+            self.assertIn(
+                "feature_metadata",
+                study["configurations"]["multimodal_enriched"],
+            )
 
 
 def _write_fixture(root: Path) -> dict[str, Path]:
