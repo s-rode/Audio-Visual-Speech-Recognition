@@ -47,6 +47,7 @@ const ui = {
   whisperLiveTranscript: document.querySelector("#whisper-live-transcript"),
   whisperSegments: document.querySelector("#whisper-segments"),
   avecTranscriptCard: document.querySelector("#avec-transcript-card"),
+  avecTranscriptName: document.querySelector("#avec-transcript-name"),
   avecTranscriptStatus: document.querySelector("#avec-transcript-status"),
   avecLiveTranscript: document.querySelector("#avec-live-transcript"),
   avecSegments: document.querySelector("#avec-segments"),
@@ -99,8 +100,13 @@ async function loadState() {
     if (!response.ok) throw new Error(`Server returned ${response.status}`);
     state = await response.json();
     ui.serverDot.classList.add("online");
-    ui.modeLabel.textContent = state.mode === "real" ? "Real backends online" : "Presentation runtime";
-    ui.modeChip.textContent = state.mode === "real" ? "Real" : "Demo";
+    const realMode = state.mode === "real";
+    const liveWhisper = state.live_transcription === "faster-whisper";
+    ui.modeLabel.textContent = realMode
+      ? "Real backends online"
+      : liveWhisper ? "Live Whisper + demo AVEC" : "Presentation runtime";
+    ui.modeChip.textContent = realMode ? "Real" : liveWhisper ? "Hybrid" : "Demo";
+    ui.avecTranscriptName.textContent = realMode ? "AVEC" : "AVEC (demo)";
     ui.policyLabel.textContent = `${state.policy.type} policy · ${state.policy.audio_system} / ${state.policy.av_system}`;
     const threshold = Number(state.policy.threshold);
     ui.threshold.textContent = Number.isFinite(threshold)

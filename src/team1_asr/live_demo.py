@@ -21,7 +21,7 @@ import soundfile as sf
 
 from team1_asr.backends.base import ASRBackend, TranscriptionRequest
 from team1_asr.backends.factory import create_backend
-from team1_asr.config import load_config
+from team1_asr.config import BackendConfig, load_config
 from team1_asr.live_capture import BrowserCapturePreparer, capture_suffix
 from team1_asr.live_router import LiveRouter, load_policy
 from team1_asr.router_features import extract_live_features
@@ -78,6 +78,7 @@ class DemoApplication:
         capture_preparer: BrowserCapturePreparer,
         *,
         mode: str,
+        live_transcription: str = "mock",
     ) -> None:
         if not samples:
             raise ValueError("The live demo requires at least one sample.")
@@ -85,6 +86,7 @@ class DemoApplication:
         self.samples = {sample.utterance_id: sample for sample in samples}
         self.capture_preparer = capture_preparer
         self.mode = mode
+        self.live_transcription = live_transcription
         self.lock = threading.Lock()
         self.capture_directory = TemporaryDirectory(prefix="team1-live-media-")
         self.capture_media: dict[str, dict[str, Path]] = {}
@@ -94,6 +96,7 @@ class DemoApplication:
         return {
             "mode": self.mode,
             "capture_enabled": True,
+            "live_transcription": self.live_transcription,
             "policy": {
                 "type": self.router.policy.get("policy_type"),
                 "threshold": self.router.policy.get("threshold"),
@@ -250,6 +253,23 @@ class _LazyBackend:
             close()
 
 
+class _LiveInputBackend:
+    def __init__(self, sample_backend: ASRBackend, live_backend: ASRBackend) -> None:
+        self.sample_backend = sample_backend
+        self.live_backend = live_backend
+
+    def transcribe(self, request: TranscriptionRequest) -> Transcript:
+        live = bool(request.utterance_id and request.utterance_id.startswith("live-"))
+        backend = self.live_backend if live else self.sample_backend
+        return backend.transcribe(request)
+
+    def close(self) -> None:
+        for backend in (self.sample_backend, self.live_backend):
+            close = getattr(backend, "close", None)
+            if close is not None:
+                close()
+
+
 class _MockBackend:
     def __init__(self, kind: str, delay: float = 0.18) -> None:
         self.kind = kind
@@ -332,6 +352,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7860)
+    parser.add_argument("--live-whisper-model", default="base.en")
+    parser.add_argument("--live-whisper-device", default="cpu")
+    parser.add_argument("--live-whisper-compute-type", default="int8")
+    parser.add_argument(
+        "--mock-live-transcripts",
+        action="store_true",
+        help="Keep hard-coded presentation transcripts for camera captures.",
+    )
     return parser
 
 
@@ -352,7 +380,11 @@ def main() -> None:
     application = (
         _build_real_application(args)
         if all(real_args)
-        else build_mock_application()
+        else build_mock_application(
+            live_whisper_backend=(
+                None if args.mock_live_transcripts else _build_live_whisper(args)
+            )
+        )
     )
     server = create_server(application, args.host, args.port)
     address, port = server.server_address[:2]
@@ -377,7 +409,27 @@ def create_server(
     return ThreadingHTTPServer((host, port), Handler)
 
 
-def build_mock_application(*, delay: float = 0.18) -> DemoApplication:
+def _build_live_whisper(args: argparse.Namespace) -> ASRBackend:
+    config = BackendConfig(
+        kind="faster-whisper",
+        model=args.live_whisper_model,
+        device=args.live_whisper_device,
+        compute_type=args.live_whisper_compute_type,
+        beam_size=1,
+        best_of=1,
+        language="en",
+        word_timestamps=True,
+        vad_filter=True,
+        condition_on_previous_text=False,
+    )
+    return _LazyBackend(lambda: create_backend(config))
+
+
+def build_mock_application(
+    *,
+    delay: float = 0.18,
+    live_whisper_backend: ASRBackend | None = None,
+) -> DemoApplication:
     policy = {
         "version": 1,
         "policy_type": "learned_logistic",
@@ -462,9 +514,15 @@ def build_mock_application(*, delay: float = 0.18) -> DemoApplication:
             "audio_video_sync_correlation": 0.76,
         }
 
+    sample_whisper = _MockBackend("whisper", delay)
+    whisper_backend = (
+        _LiveInputBackend(sample_whisper, live_whisper_backend)
+        if live_whisper_backend is not None
+        else sample_whisper
+    )
     router = LiveRouter(
         policy,
-        _MockBackend("whisper", delay),
+        whisper_backend,
         _MockBackend("avec", delay),
         feature_extractor=mock_features,
     )
@@ -473,6 +531,9 @@ def build_mock_application(*, delay: float = 0.18) -> DemoApplication:
         samples,
         BrowserCapturePreparer(real_preprocessing=False),
         mode="mock",
+        live_transcription=(
+            "faster-whisper" if live_whisper_backend is not None else "mock"
+        ),
     )
 
 
@@ -522,6 +583,7 @@ def _build_real_application(args: argparse.Namespace) -> DemoApplication:
         samples,
         capture_preparer,
         mode="real",
+        live_transcription="faster-whisper",
     )
 
 

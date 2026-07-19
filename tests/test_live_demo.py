@@ -8,8 +8,14 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from team1_asr.backends.base import TranscriptionRequest
 from team1_asr.live_capture import CaptureArtifacts
-from team1_asr.live_demo import build_mock_application, create_server
+from team1_asr.live_demo import (
+    _LiveInputBackend,
+    build_mock_application,
+    create_server,
+)
+from team1_asr.types import Transcript
 
 
 class LiveDemoServerTest(unittest.TestCase):
@@ -32,10 +38,33 @@ class LiveDemoServerTest(unittest.TestCase):
 
         self.assertEqual(state["mode"], "mock")
         self.assertTrue(state["capture_enabled"])
+        self.assertEqual(state["live_transcription"], "mock")
         self.assertEqual([sample["id"] for sample in state["samples"]], [
             "clear-room",
             "street-noise",
         ])
+
+    def test_live_backend_dispatches_camera_requests_to_real_whisper(self) -> None:
+        class RecordingBackend:
+            def __init__(self, text: str) -> None:
+                self.text = text
+                self.requests: list[str | None] = []
+
+            def transcribe(self, request: TranscriptionRequest) -> Transcript:
+                self.requests.append(request.utterance_id)
+                return Transcript(self.text, "en", 1.0, [])
+
+        sample_backend = RecordingBackend("sample transcript")
+        live_backend = RecordingBackend("actual microphone words")
+        backend = _LiveInputBackend(sample_backend, live_backend)
+
+        sample = backend.transcribe(TranscriptionRequest("sample.wav", "en", "sample"))
+        live = backend.transcribe(TranscriptionRequest("live.wav", "en", "live-123"))
+
+        self.assertEqual(sample.text, "sample transcript")
+        self.assertEqual(live.text, "actual microphone words")
+        self.assertEqual(sample_backend.requests, ["sample"])
+        self.assertEqual(live_backend.requests, ["live-123"])
 
     def test_stream_shows_whisper_to_avec_switch(self) -> None:
         events = self._route(

@@ -241,11 +241,15 @@ external/AVEC/callbacks/VoxMM/AO/EffConfInterCTC_finetune/checkpoints_epoch_6_st
 
 The browser demo streams the sequential decision as it happens: Whisper
 transcribes first, the frozen policy scores pre-AVEC features, and AVEC runs only
-for requests selected by the router. Presentation mode is self-contained and
-does not load either model:
+for requests selected by the router. The deterministic Samples tab remains self-contained.
+Camera and microphone captures use real faster-whisper `base.en` transcription by default; the model
+is loaded lazily on the first recording:
 
 ~~~bash
 uv run team1-router-demo
+
+# Optional: retain the old fully mocked camera transcript behavior.
+uv run team1-router-demo --mock-live-transcripts
 ~~~
 
 Open http://127.0.0.1:7860, allow camera and microphone access, and record a
@@ -254,8 +258,8 @@ the video stream, runs Whisper, and shows whether the frozen router keeps the
 Whisper result or invokes AVEC. The inspector exposes the captured clip, the exact
 video passed to AVEC, extracted-audio playback and waveform, plus routing feature
 telemetry. Whisper and AVEC transcripts update independently with timestamped
-segments and the selected result is highlighted. The Samples tab retains the clear-room and
-street-noise controls for deterministic presentations.
+segments and the selected result is highlighted. The Samples tab retains the
+clear-room and street-noise controls for deterministic presentations.
 
 In real mode, live browser captures also pass through the AVEC mouth-ROI
 preprocessor. That requires the AVEC repository, its configured Python
