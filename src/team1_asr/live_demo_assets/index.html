@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Signal Route | Live ASR Router</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <strong>Signal Route</strong>
+        <span>Live ASR router</span>
+      </div>
+    </div>
+    <div class="runtime">
+      <span class="status-dot" id="server-dot"></span>
+      <span id="mode-label">Connecting</span>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="input-panel" aria-labelledby="input-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Input stream</p>
+          <h1 id="input-title">Route a sample</h1>
+        </div>
+        <span class="mode-chip" id="mode-chip">Demo</span>
+      </div>
+
+      <div class="sample-switcher" id="sample-switcher" role="tablist" aria-label="Samples"></div>
+
+      <div class="media-stage">
+        <video id="video-preview" controls playsinline hidden></video>
+        <canvas id="signal-canvas" aria-label="Audio waveform preview"></canvas>
+        <div class="media-overlay">
+          <span id="condition-label">Signal preview</span>
+          <span id="duration-label">3.2 s</span>
+        </div>
+      </div>
+
+      <div class="reference-block">
+        <span>Reference</span>
+        <p id="reference-text">Loading sample...</p>
+      </div>
+
+      <div class="signal-controls" id="signal-controls">
+        <div class="control-row">
+          <label for="audio-confidence">Whisper log probability</label>
+          <output id="audio-confidence-value">-0.34</output>
+        </div>
+        <input id="audio-confidence" type="range" min="-2" max="0" step="0.01" value="-0.34">
+
+        <div class="control-row">
+          <label for="mouth-confidence">Mouth landmark confidence</label>
+          <output id="mouth-confidence-value">0.92</output>
+        </div>
+        <input id="mouth-confidence" type="range" min="0" max="1" step="0.01" value="0.92">
+
+        <label class="toggle-row" for="roi-ready">
+          <span>
+            <strong>Usable mouth ROI</strong>
+            <small>Visual gate</small>
+          </span>
+          <input id="roi-ready" type="checkbox" checked>
+          <span class="toggle" aria-hidden="true"></span>
+        </label>
+      </div>
+
+      <button class="run-button" id="run-button" type="button">
+        <span>Run live route</span>
+        <span class="button-state" id="button-state">Ready</span>
+      </button>
+    </section>
+
+    <section class="routing-panel" aria-labelledby="routing-title">
+      <div class="section-heading routing-heading">
+        <div>
+          <p class="eyebrow">Inference trace</p>
+          <h2 id="routing-title">Sequential routing</h2>
+        </div>
+        <div class="elapsed" id="elapsed">0.00 s</div>
+      </div>
+
+      <div class="pipeline" aria-label="Routing pipeline">
+        <div class="pipeline-node" data-stage="whisper">
+          <span class="node-index">01</span>
+          <strong>Whisper</strong>
+          <small>Audio first pass</small>
+        </div>
+        <div class="pipeline-link" aria-hidden="true"><span></span></div>
+        <div class="pipeline-node" data-stage="router">
+          <span class="node-index">02</span>
+          <strong>Router</strong>
+          <small>Policy decision</small>
+        </div>
+        <div class="pipeline-link" aria-hidden="true"><span></span></div>
+        <div class="pipeline-node" data-stage="avec">
+          <span class="node-index">03</span>
+          <strong>AVEC</strong>
+          <small>Conditional fusion</small>
+        </div>
+      </div>
+
+      <div class="decision-strip" id="decision-strip">
+        <div>
+          <span>Policy score</span>
+          <strong id="score-value">Waiting</strong>
+        </div>
+        <div class="meter">
+          <span class="meter-threshold" id="meter-threshold"></span>
+          <span class="meter-value" id="meter-value"></span>
+        </div>
+        <span class="threshold-label" id="threshold-label">Threshold 0.50</span>
+      </div>
+
+      <div class="trace-list" id="trace-list" aria-live="polite">
+        <div class="trace-empty" id="trace-empty">
+          <span class="trace-line"></span>
+          <p>Run a sample to stream the inference trace.</p>
+        </div>
+      </div>
+
+      <div class="result-band" id="result-band">
+        <div class="result-header">
+          <span>Selected transcript</span>
+          <strong id="selected-system">No route yet</strong>
+        </div>
+        <blockquote id="result-text">The final transcription will appear here.</blockquote>
+        <div class="comparison" id="comparison" hidden>
+          <div>
+            <span>Whisper</span>
+            <p id="whisper-text"></p>
+          </div>
+          <div>
+            <span>AVEC</span>
+            <p id="avec-text"></p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span id="policy-label">Frozen routing policy</span>
+    <span>Whisper runs first. AVEC runs only when selected.</span>
+  </footer>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

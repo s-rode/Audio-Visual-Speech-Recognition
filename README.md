@@ -237,6 +237,34 @@ The matching audio-only checkpoint is expected at:
 external/AVEC/callbacks/VoxMM/AO/EffConfInterCTC_finetune/checkpoints_epoch_6_step_3600.ckpt
 ~~~
 
+## Live router demo
+
+The browser demo streams the sequential decision as it happens: Whisper
+transcribes first, the frozen policy scores pre-AVEC features, and AVEC runs only
+for requests selected by the router. Presentation mode is self-contained and
+does not load either model:
+
+~~~bash
+uv run team1-router-demo
+~~~
+
+Open http://127.0.0.1:7860 and switch between the clear-room and street-noise
+samples. The signal controls exercise the same policy evaluator used by real
+mode.
+
+Real mode reads samples from an AVEC mouth-ROI manifest and its preprocessing
+reliability CSV. It lazily loads both backends and serves only media paths listed
+in that manifest:
+
+~~~bash
+uv run team1-router-demo \
+  --manifest data/lrs_voxmm/dev_avec_roi_600_balanced/manifest.csv \
+  --reliability data/lrs_voxmm/dev_avec_roi_600_balanced/visual_reliability.csv \
+  --policy outputs/lrs_voxmm_noise_600_enriched/router_study/best_policy.json \
+  --whisper-config configs/lrs_voxmm_whisper_base_600_enriched.toml \
+  --avec-config configs/lrs_voxmm_avec_av_finetuned_600_balanced.toml
+~~~
+
 ## Reliability routing
 
 The router is a sequential setup. Whisper base.en always transcribes the audio

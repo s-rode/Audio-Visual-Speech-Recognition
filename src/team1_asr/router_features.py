@@ -2,15 +2,98 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import asdict
 import json
 import math
 from pathlib import Path
+import unicodedata
 
 import av
 import numpy as np
 import soundfile as sf
 
+from team1_asr.types import Transcript
 from team1_asr.visual_reliability import optional_float
+
+
+def extract_live_features(
+    audio_path: Path,
+    video_path: Path | None,
+    transcript: Transcript,
+) -> dict[str, object]:
+    """Extract one request's deployable features after Whisper completes."""
+    samples, sample_rate = sf.read(audio_path, dtype="float64", always_2d=True)
+    audio = samples.mean(axis=1)
+    features: dict[str, object] = {
+        **_transcript_features(transcript),
+        **_audio_signal_features(audio),
+    }
+    audio_features, _ = _audio_features(audio, sample_rate)
+    features.update(audio_features)
+
+    if video_path is None:
+        return features
+    frames, timestamps = _read_gray_video(video_path)
+    video_features, mouth_envelope = _video_features(frames, timestamps)
+    features.update(video_features)
+    features.update(
+        _synchronization_features(audio, sample_rate, timestamps, mouth_envelope)
+    )
+    return features
+
+
+def _transcript_features(transcript: Transcript) -> dict[str, object]:
+    record = {"segments": [asdict(segment) for segment in transcript.segments]}
+    logprobs = [
+        value
+        for segment in transcript.segments
+        for value in [optional_float(segment.avg_logprob)]
+        if value is not None
+    ]
+    no_speech = [
+        value
+        for segment in transcript.segments
+        for value in [optional_float(segment.no_speech_prob)]
+        if value is not None
+    ]
+    duration = optional_float(transcript.duration)
+    normalized = "".join(
+        character
+        for character in transcript.text.lower()
+        if not unicodedata.category(character).startswith("P")
+    )
+    word_count = len(normalized.split())
+    return {
+        **_whisper_features(record),
+        "audio_avg_logprob_mean": _mean(logprobs),
+        "audio_avg_logprob_min": min(logprobs) if logprobs else None,
+        "audio_no_speech_prob_max": max(no_speech) if no_speech else None,
+        "audio_prediction_word_count": word_count,
+        "audio_duration": duration,
+        "audio_prediction_words_per_second": (
+            word_count / duration if duration is not None and duration > 0 else None
+        ),
+    }
+
+
+def _audio_signal_features(samples: np.ndarray) -> dict[str, float | None]:
+    if samples.size == 0:
+        return {
+            "audio_rms_dbfs": None,
+            "audio_peak_dbfs": None,
+            "audio_crest_factor_db": None,
+            "audio_clipping_fraction": None,
+        }
+    rms = float(np.sqrt(np.mean(samples**2)))
+    peak = float(np.max(np.abs(samples)))
+    epsilon = 1e-12
+    return {
+        "audio_rms_dbfs": _db(rms),
+        "audio_peak_dbfs": _db(peak),
+        "audio_crest_factor_db": 20.0
+        * math.log10(max(peak, epsilon) / max(rms, epsilon)),
+        "audio_clipping_fraction": float(np.mean(np.abs(samples) >= 0.999)),
+    }
 
 
 def extract_features(
