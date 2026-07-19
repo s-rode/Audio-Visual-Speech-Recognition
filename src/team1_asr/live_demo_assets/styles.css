@@ -142,7 +142,7 @@ input:focus-visible {
   text-transform: uppercase;
 }
 
-h1, h2 {
+h1, h2, h3 {
   margin: 0;
   font-size: 25px;
   line-height: 1.15;
@@ -333,6 +333,7 @@ h1, h2 {
 
 .media-overlay {
   position: absolute;
+  z-index: 3;
   inset: auto 0 0;
   padding: 10px 12px;
   display: flex;
@@ -674,6 +675,148 @@ blockquote {
   line-height: 1.4;
 }
 
+.live-audio-strip {
+  position: absolute;
+  z-index: 2;
+  inset: 10px 10px auto;
+  height: 58px;
+  padding: 7px 10px;
+  display: grid;
+  grid-template-columns: 30px 1fr;
+  align-items: center;
+  gap: 8px;
+  background: rgba(13, 21, 23, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 4px;
+  color: #8fe2d8;
+}
+
+.live-audio-strip span {
+  font: 800 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+#live-waveform {
+  width: 100%;
+  height: 42px;
+}
+
+.capture-inspector {
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.inspector-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 14px;
+}
+
+.inspector-heading h3 {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: 0;
+}
+
+.inspector-heading > span {
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.inspector-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-bottom: 1px solid var(--line);
+}
+
+.inspector-tabs button {
+  min-height: 38px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.inspector-tabs button.active {
+  color: var(--ink);
+  border-bottom-color: var(--coral);
+}
+
+.inspector-view {
+  min-height: 190px;
+  background: #202c2f;
+}
+
+.inspector-view video {
+  width: 100%;
+  height: 230px;
+  display: block;
+  object-fit: contain;
+  background: #202c2f;
+}
+
+.audio-inspector {
+  min-height: 190px;
+  padding: 18px;
+  display: grid;
+  align-content: center;
+  gap: 14px;
+}
+
+#capture-waveform {
+  width: 100%;
+  height: 120px;
+  display: block;
+}
+
+#capture-audio {
+  width: 100%;
+  height: 34px;
+}
+
+.telemetry-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+}
+
+.telemetry-item {
+  min-width: 0;
+  min-height: 68px;
+  padding: 11px;
+  display: grid;
+  align-content: space-between;
+  gap: 5px;
+  background: white;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.telemetry-item span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.telemetry-item strong {
+  overflow: hidden;
+  font: 800 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 footer {
   min-height: 36px;
   padding: 8px clamp(18px, 3vw, 42px);
@@ -710,6 +853,8 @@ footer {
   .trace-status { grid-column: 2; }
   .comparison { grid-template-columns: 1fr; }
   .capture-actions { grid-template-columns: 1fr; }
+  .telemetry-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .inspector-view video { height: 190px; }
   .comparison div + div { padding-left: 0; border-left: 0; }
   footer { display: none; }
 }

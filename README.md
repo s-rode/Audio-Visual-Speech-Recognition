@@ -251,7 +251,9 @@ uv run team1-router-demo
 Open http://127.0.0.1:7860, allow camera and microphone access, and record a
 five-second synchronized window. The server extracts 16 kHz mono audio, checks
 the video stream, runs Whisper, and shows whether the frozen router keeps the
-Whisper result or invokes AVEC. The Samples tab retains the clear-room and
+Whisper result or invokes AVEC. The inspector exposes the captured clip, the exact
+video passed to AVEC, extracted-audio playback and waveform, plus routing feature
+telemetry. The Samples tab retains the clear-room and
 street-noise controls for deterministic presentations.
 
 In real mode, live browser captures also pass through the AVEC mouth-ROI

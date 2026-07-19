@@ -41,6 +41,10 @@
       <div class="media-stage">
         <video id="video-preview" autoplay muted playsinline></video>
         <canvas id="signal-canvas" aria-label="Audio waveform preview" hidden></canvas>
+        <div class="live-audio-strip" id="live-audio-strip" hidden>
+          <span>MIC</span>
+          <canvas id="live-waveform" width="640" height="72" aria-label="Live microphone waveform"></canvas>
+        </div>
         <div class="media-overlay">
           <span id="condition-label">Camera offline</span>
           <span id="duration-label">5 s window</span>
@@ -162,6 +166,35 @@
           </div>
         </div>
       </div>
+
+      <section class="capture-inspector" id="capture-inspector" aria-labelledby="inspector-title" hidden>
+        <div class="inspector-heading">
+          <div>
+            <p class="eyebrow">Media inspection</p>
+            <h3 id="inspector-title">Captured signal</h3>
+          </div>
+          <span id="artifact-status">Artifacts ready</span>
+        </div>
+
+        <div class="inspector-tabs" role="tablist" aria-label="Capture artifacts">
+          <button type="button" class="active" data-inspector-view="source" role="tab">Captured</button>
+          <button type="button" id="processed-tab" data-inspector-view="processed" role="tab">AVEC input</button>
+          <button type="button" data-inspector-view="audio" role="tab">Waveform</button>
+        </div>
+
+        <div class="inspector-view" data-inspector-panel="source">
+          <video id="source-capture" controls muted playsinline></video>
+        </div>
+        <div class="inspector-view" data-inspector-panel="processed" hidden>
+          <video id="processed-capture" controls muted playsinline></video>
+        </div>
+        <div class="inspector-view audio-inspector" data-inspector-panel="audio" hidden>
+          <canvas id="capture-waveform" width="720" height="140" aria-label="Extracted microphone waveform"></canvas>
+          <audio id="capture-audio" controls></audio>
+        </div>
+
+        <div class="telemetry-grid" id="telemetry-grid"></div>
+      </section>
     </section>
   </main>
 

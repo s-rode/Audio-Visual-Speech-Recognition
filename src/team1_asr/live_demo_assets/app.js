@@ -29,6 +29,18 @@ const ui = {
   deviceCopy: document.querySelector("#device-copy"),
   mediaStage: document.querySelector(".media-stage"),
   inputTitle: document.querySelector("#input-title"),
+  liveAudioStrip: document.querySelector("#live-audio-strip"),
+  liveWaveform: document.querySelector("#live-waveform"),
+  captureInspector: document.querySelector("#capture-inspector"),
+  inspectorTabs: document.querySelectorAll("[data-inspector-view]"),
+  inspectorPanels: document.querySelectorAll("[data-inspector-panel]"),
+  sourceCapture: document.querySelector("#source-capture"),
+  processedCapture: document.querySelector("#processed-capture"),
+  processedTab: document.querySelector("#processed-tab"),
+  captureAudio: document.querySelector("#capture-audio"),
+  captureWaveform: document.querySelector("#capture-waveform"),
+  artifactStatus: document.querySelector("#artifact-status"),
+  telemetry: document.querySelector("#telemetry-grid"),
   elapsed: document.querySelector("#elapsed"),
   trace: document.querySelector("#trace-list"),
   score: document.querySelector("#score-value"),
@@ -46,6 +58,7 @@ const ui = {
 const stageLabels = {
   capture: "Capture",
   preprocess: "Preprocess",
+  media: "Artifacts",
   whisper: "Whisper",
   features: "Features",
   router: "Router",
@@ -62,6 +75,14 @@ let waveformPhase = 0;
 let inputMode = "capture";
 let mediaStream = null;
 let mediaRecorder = null;
+let audioContext = null;
+let audioAnalyser = null;
+let audioSource = null;
+let liveWaveformFrame = null;
+let capturePlaybackFrame = null;
+let captureWaveform = [];
+let artifactMetrics = {};
+let routeFeatures = {};
 
 async function loadState() {
   try {
@@ -147,6 +168,7 @@ async function enableCamera() {
     ui.video.removeAttribute("src");
     ui.video.srcObject = mediaStream;
     await ui.video.play();
+    startAudioMonitor(mediaStream);
     for (const track of mediaStream.getTracks()) {
       track.addEventListener("ended", () => {
         if (mediaStream && mediaStream.getTracks().every((item) => item.readyState === "ended")) {
@@ -168,6 +190,7 @@ async function enableCamera() {
 }
 
 function stopCamera() {
+  stopAudioMonitor();
   if (mediaRecorder && mediaRecorder.state !== "inactive") {
     mediaRecorder.stop();
   }
@@ -188,6 +211,52 @@ function setDeviceState(title, copy, status) {
   ui.deviceCopy.textContent = copy;
   ui.deviceDot.classList.remove("ready", "recording");
   if (status) ui.deviceDot.classList.add(status);
+}
+
+function startAudioMonitor(stream) {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return;
+  stopAudioMonitor();
+  audioContext = new AudioContextClass();
+  audioAnalyser = audioContext.createAnalyser();
+  audioAnalyser.fftSize = 1024;
+  audioAnalyser.smoothingTimeConstant = 0.72;
+  audioSource = audioContext.createMediaStreamSource(stream);
+  audioSource.connect(audioAnalyser);
+  audioContext.resume().catch(() => {});
+  ui.liveAudioStrip.hidden = false;
+  drawLiveWaveform();
+}
+
+function stopAudioMonitor() {
+  if (liveWaveformFrame) cancelAnimationFrame(liveWaveformFrame);
+  liveWaveformFrame = null;
+  if (audioSource) audioSource.disconnect();
+  audioSource = null;
+  audioAnalyser = null;
+  if (audioContext) audioContext.close().catch(() => {});
+  audioContext = null;
+  ui.liveAudioStrip.hidden = true;
+}
+
+function drawLiveWaveform() {
+  if (!audioAnalyser) return;
+  const values = new Uint8Array(audioAnalyser.fftSize);
+  audioAnalyser.getByteTimeDomainData(values);
+  const canvas = ui.liveWaveform;
+  const context = canvas.getContext("2d");
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.strokeStyle = "#8fe2d8";
+  context.lineWidth = 2;
+  context.beginPath();
+  for (let index = 0; index < values.length; index += 1) {
+    const x = (index / (values.length - 1)) * canvas.width;
+    const y = (values[index] / 255) * canvas.height;
+    if (index === 0) context.moveTo(x, y);
+    else context.lineTo(x, y);
+  }
+  context.stroke();
+  liveWaveformFrame = requestAnimationFrame(drawLiveWaveform);
 }
 
 function renderSamples() {
@@ -447,8 +516,124 @@ function formatBytes(bytes) {
     : `${Math.ceil(bytes / 1000)} KB`;
 }
 
+function showCaptureMedia(media) {
+  artifactMetrics = media;
+  routeFeatures = {};
+  ui.captureInspector.hidden = false;
+  ui.sourceCapture.src = media.source_url;
+  ui.processedCapture.src = media.processed_url;
+  ui.captureAudio.src = media.audio_url;
+  ui.sourceCapture.load();
+  ui.processedCapture.load();
+  ui.captureAudio.load();
+  ui.processedTab.textContent = media.processed_label || "AVEC input";
+  ui.artifactStatus.textContent = media.processed_distinct
+    ? "Mouth ROI ready"
+    : "Feature inputs ready";
+  captureWaveform = Array.isArray(media.waveform) ? media.waveform : [];
+  setInspectorView("source");
+  drawCaptureWaveform();
+  renderTelemetry();
+}
+
+function setInspectorView(view) {
+  for (const tab of ui.inspectorTabs) {
+    const active = tab.dataset.inspectorView === view;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  }
+  for (const panel of ui.inspectorPanels) {
+    panel.hidden = panel.dataset.inspectorPanel !== view;
+  }
+  if (view === "audio") drawCaptureWaveform();
+}
+
+function drawCaptureWaveform() {
+  const canvas = ui.captureWaveform;
+  const context = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  const center = height / 2;
+  context.fillStyle = "#202c2f";
+  context.fillRect(0, 0, width, height);
+  context.strokeStyle = "rgba(255, 255, 255, 0.2)";
+  context.beginPath();
+  context.moveTo(0, center + 0.5);
+  context.lineTo(width, center + 0.5);
+  context.stroke();
+  if (!captureWaveform.length) return;
+  const barWidth = width / captureWaveform.length;
+  context.fillStyle = "#42bbc3";
+  for (let index = 0; index < captureWaveform.length; index += 1) {
+    const amplitude = Math.max(1, captureWaveform[index] * (height * 0.43));
+    context.fillRect(index * barWidth, center - amplitude, Math.max(1, barWidth - 1), amplitude * 2);
+  }
+  if (Number.isFinite(ui.captureAudio.duration) && ui.captureAudio.duration > 0) {
+    const playhead = (ui.captureAudio.currentTime / ui.captureAudio.duration) * width;
+    context.fillStyle = "#f05d44";
+    context.fillRect(playhead, 0, 2, height);
+  }
+}
+
+function animateCapturePlayback() {
+  drawCaptureWaveform();
+  if (!ui.captureAudio.paused) {
+    capturePlaybackFrame = requestAnimationFrame(animateCapturePlayback);
+  }
+}
+
+function renderTelemetry() {
+  const metrics = [
+    ["Capture size", artifactMetrics.bytes, (value) => formatBytes(value)],
+    ["Audio duration", artifactMetrics.duration_seconds, (value) => Number(value).toFixed(2) + " s"],
+    ["Sample rate", artifactMetrics.sample_rate, (value) => Math.round(value / 1000) + " kHz"],
+    ["Input RMS", routeFeatures.audio_rms_dbfs ?? artifactMetrics.rms_dbfs, (value) => Number(value).toFixed(1) + " dBFS"],
+    ["Whisper log p", routeFeatures.audio_avg_logprob_mean, (value) => Number(value).toFixed(3)],
+    ["No speech", routeFeatures.audio_no_speech_prob_max, (value) => Number(value).toFixed(3)],
+    ["Spectral flatness", routeFeatures.audio_spectral_flatness, (value) => Number(value).toFixed(3)],
+    ["Mouth motion", routeFeatures.video_mouth_motion_mean, (value) => Number(value).toFixed(3)],
+    [artifactMetrics.visual_metrics_mode === "presentation" ? "Visual gate (demo)" : "Face detection", routeFeatures.face_detection_rate, (value) => (Number(value) * 100).toFixed(0) + "%"],
+    ["A/V correlation", routeFeatures.audio_video_sync_correlation, (value) => Number(value).toFixed(3)],
+    ["A/V lag", routeFeatures.audio_video_sync_lag_ms, (value) => Number(value).toFixed(0) + " ms"],
+    ["ROI status", routeFeatures.roi_status, (value) => String(value)],
+  ].filter(([, value]) => value !== null && value !== undefined);
+
+  ui.telemetry.replaceChildren();
+  for (const [label, value, formatter] of metrics) {
+    const item = document.createElement("div");
+    item.className = "telemetry-item";
+    const name = document.createElement("span");
+    name.textContent = label;
+    const output = document.createElement("strong");
+    output.textContent = formatter(value);
+    output.title = output.textContent;
+    item.append(name, output);
+    ui.telemetry.append(item);
+  }
+}
+
+function clearCaptureInspector() {
+  if (capturePlaybackFrame) cancelAnimationFrame(capturePlaybackFrame);
+  capturePlaybackFrame = null;
+  for (const media of [ui.sourceCapture, ui.processedCapture, ui.captureAudio]) {
+    media.pause();
+    media.removeAttribute("src");
+    media.load();
+  }
+  captureWaveform = [];
+  artifactMetrics = {};
+  routeFeatures = {};
+  ui.telemetry.replaceChildren();
+  ui.captureInspector.hidden = true;
+}
+
 function handleEvent(event) {
   appendTrace(event);
+  if (event.stage === "media" && event.media) showCaptureMedia(event.media);
+  if (event.features) {
+    routeFeatures = { ...routeFeatures, ...event.features };
+    renderTelemetry();
+  }
   const stage = event.stage === "features" ? "router" : event.stage;
   const node = document.querySelector(`.pipeline-node[data-stage="${stage}"]`);
   if (node) {
@@ -504,6 +689,8 @@ function appendTrace(event) {
 }
 
 function traceDetail(event) {
+  if (event.bytes != null) return formatBytes(event.bytes);
+  if (event.media) return "Captured video, extracted WAV, and router video available";
   if (event.transcript) return `“${event.transcript}”`;
   if (event.stage === "router" && event.selected_system) {
     return `Selected ${event.selected_system} · score ${formatNumber(event.score)} · threshold ${formatNumber(event.threshold)}`;
@@ -518,6 +705,10 @@ function traceDetail(event) {
 }
 
 function renderResult(result) {
+  if (result.features) {
+    routeFeatures = { ...routeFeatures, ...result.features };
+    renderTelemetry();
+  }
   ui.selectedSystem.textContent = result.selected_system;
   ui.resultText.textContent = result.transcript.text || "No speech detected.";
   ui.whisperText.textContent = result.whisper_transcript.text || "No speech detected.";
@@ -553,6 +744,7 @@ function resetRoute() {
   ui.selectedSystem.textContent = "No route yet";
   ui.resultText.textContent = "The final transcription will appear here.";
   ui.comparison.hidden = true;
+  clearCaptureInspector();
   ui.trace.innerHTML = '<div class="trace-empty" id="trace-empty"><span class="trace-line"></span><p>Start an input to stream the inference trace.</p></div>';
   for (const node of document.querySelectorAll(".pipeline-node")) {
     node.classList.remove("running", "complete", "skipped", "selected");
@@ -592,6 +784,15 @@ ui.samplesMode.addEventListener("click", () => setInputMode("samples"));
 ui.captureMode.addEventListener("click", () => setInputMode("capture"));
 ui.enableCamera.addEventListener("click", enableCamera);
 ui.record.addEventListener("click", recordCapture);
-window.addEventListener("resize", drawWaveform);
+ui.captureAudio.addEventListener("play", animateCapturePlayback);
+ui.captureAudio.addEventListener("pause", drawCaptureWaveform);
+ui.captureAudio.addEventListener("seeked", drawCaptureWaveform);
+for (const tab of ui.inspectorTabs) {
+  tab.addEventListener("click", () => setInspectorView(tab.dataset.inspectorView));
+}
+window.addEventListener("resize", () => {
+  drawWaveform();
+  drawCaptureWaveform();
+});
 window.addEventListener("beforeunload", stopCamera);
 loadState();

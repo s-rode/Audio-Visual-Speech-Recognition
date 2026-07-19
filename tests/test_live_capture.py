@@ -41,6 +41,7 @@ class LiveCaptureTest(unittest.TestCase):
                 work_dir / "live-test.wav",
             )
             validate_video.assert_called_once_with(recording_path)
+            self.assertEqual(artifacts.source_path, recording_path)
             self.assertEqual(artifacts.video_path, recording_path)
             self.assertEqual(artifacts.reliability["roi_status"], "success")
 

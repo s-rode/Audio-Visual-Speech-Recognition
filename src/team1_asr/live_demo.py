@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import json
 import math
 import mimetypes
+import shutil
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import threading
@@ -85,6 +86,9 @@ class DemoApplication:
         self.capture_preparer = capture_preparer
         self.mode = mode
         self.lock = threading.Lock()
+        self.capture_directory = TemporaryDirectory(prefix="team1-live-media-")
+        self.capture_media: dict[str, dict[str, Path]] = {}
+        self.capture_order: list[str] = []
 
     def state(self) -> dict[str, object]:
         return {
@@ -143,27 +147,81 @@ class DemoApplication:
         if not payload:
             raise ValueError("Camera capture is empty.")
         utterance_id = f"live-{uuid4().hex[:12]}"
-        with TemporaryDirectory(prefix="team1-live-capture-") as temp_dir:
-            with self.lock:
+        work_dir = Path(self.capture_directory.name) / utterance_id
+        work_dir.mkdir()
+        with self.lock:
+            try:
                 artifacts = self.capture_preparer.prepare(
                     payload,
                     content_type,
-                    Path(temp_dir),
+                    work_dir,
                     utterance_id,
                     emit,
                 )
-                request = TranscriptionRequest(
-                    audio_path=str(artifacts.audio_path),
-                    video_path=str(artifacts.video_path),
-                    language="en",
-                    utterance_id=utterance_id,
-                    video_preprocessing="preprocessed",
-                )
-                self.router.route(
-                    request,
-                    artifacts.reliability,
-                    emit=emit,
-                )
+            except Exception:
+                shutil.rmtree(work_dir, ignore_errors=True)
+                raise
+            self.capture_media[utterance_id] = {
+                "source": artifacts.source_path,
+                "audio": artifacts.audio_path,
+                "processed": artifacts.video_path,
+            }
+            self.capture_order.append(utterance_id)
+            self._prune_captures()
+            preview = _audio_preview(artifacts.audio_path)
+            processed_distinct = (
+                artifacts.video_path.resolve() != artifacts.source_path.resolve()
+            )
+            emit(
+                {
+                    "stage": "media",
+                    "status": "complete",
+                    "message": "Capture artifacts are ready to inspect.",
+                    "capture_id": utterance_id,
+                    "media": {
+                        "source_url": f"/api/capture/{utterance_id}/source",
+                        "audio_url": f"/api/capture/{utterance_id}/audio",
+                        "processed_url": f"/api/capture/{utterance_id}/processed",
+                        "processed_label": (
+                            "Mouth ROI" if processed_distinct else "Router video"
+                        ),
+                        "processed_distinct": processed_distinct,
+                        "visual_metrics_mode": (
+                            "measured" if processed_distinct else "presentation"
+                        ),
+                        "bytes": len(payload),
+                        **preview,
+                    },
+                }
+            )
+            request = TranscriptionRequest(
+                audio_path=str(artifacts.audio_path),
+                video_path=str(artifacts.video_path),
+                language="en",
+                utterance_id=utterance_id,
+                video_preprocessing="preprocessed",
+            )
+            self.router.route(
+                request,
+                artifacts.reliability,
+                emit=emit,
+            )
+
+    def capture_path(self, capture_id: str, kind: str) -> Path | None:
+        path = self.capture_media.get(capture_id, {}).get(kind)
+        return path if path is not None and path.is_file() else None
+
+    def _prune_captures(self) -> None:
+        while len(self.capture_order) > 6:
+            capture_id = self.capture_order.pop(0)
+            paths = self.capture_media.pop(capture_id, {})
+            source = paths.get("source")
+            if source is not None:
+                shutil.rmtree(source.parent, ignore_errors=True)
+
+    def close(self) -> None:
+        self.router.close()
+        self.capture_directory.cleanup()
 
     def media_path(self, sample_id: str, kind: str) -> Path | None:
         sample = self.samples.get(sample_id)
@@ -305,7 +363,7 @@ def main() -> None:
         pass
     finally:
         server.server_close()
-        application.router.close()
+        application.close()
 
 
 def create_server(
@@ -475,6 +533,9 @@ class _DemoHandler(BaseHTTPRequestHandler):
         if path == "/api/state":
             self._send_json(self.app.state())
             return
+        if path.startswith("/api/capture/"):
+            self._send_capture_media(path)
+            return
         if path.startswith("/api/media/"):
             self._send_media(path)
             return
@@ -555,6 +616,17 @@ class _DemoHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         return
 
+    def _send_capture_media(self, route: str) -> None:
+        parts = route.strip("/").split("/")
+        if len(parts) != 4 or parts[3] not in {"source", "audio", "processed"}:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        path = self.app.capture_path(parts[2], parts[3])
+        if path is None:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        self._send_file(path)
+
     def _send_json(
         self,
         value: object,
@@ -573,13 +645,32 @@ class _DemoHandler(BaseHTTPRequestHandler):
         if not path.is_file():
             self.send_error(HTTPStatus.NOT_FOUND)
             return
-        body = path.read_bytes()
+        size = path.stat().st_size
+        start, end = 0, max(0, size - 1)
+        status = HTTPStatus.OK
+        range_header = self.headers.get("Range")
+        if range_header and size:
+            try:
+                start, end = _parse_byte_range(range_header, size)
+            except ValueError:
+                self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.end_headers()
+                return
+            status = HTTPStatus.PARTIAL_CONTENT
+
+        length = end - start + 1 if size else 0
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        self.send_response(HTTPStatus.OK)
+        self.send_response(status)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        if status == HTTPStatus.PARTIAL_CONTENT:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.end_headers()
-        self.wfile.write(body)
+        with path.open("rb") as handle:
+            handle.seek(start)
+            self.wfile.write(handle.read(length))
 
     def _send_media(self, route: str) -> None:
         parts = route.strip("/").split("/")
@@ -591,6 +682,25 @@ class _DemoHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         self._send_file(path)
+
+
+def _parse_byte_range(value: str, size: int) -> tuple[int, int]:
+    unit, separator, bounds = value.partition("=")
+    if unit.strip().lower() != "bytes" or not separator or "," in bounds:
+        raise ValueError("Invalid byte range.")
+    start_text, separator, end_text = bounds.strip().partition("-")
+    if not separator or (not start_text and not end_text):
+        raise ValueError("Invalid byte range.")
+    if not start_text:
+        suffix_length = int(end_text)
+        if suffix_length <= 0:
+            raise ValueError("Invalid byte range.")
+        return max(0, size - suffix_length), size - 1
+    start = int(start_text)
+    end = int(end_text) if end_text else size - 1
+    if start < 0 or start >= size or end < start:
+        raise ValueError("Invalid byte range.")
+    return start, min(end, size - 1)
 
 
 def _validate_overrides(values: dict[str, object]) -> dict[str, object]:
@@ -605,6 +715,29 @@ def _validate_overrides(values: dict[str, object]) -> dict[str, object]:
         minimum, maximum = _OVERRIDE_RANGES[name]
         result[name] = max(minimum, min(maximum, number))
     return result
+
+
+def _audio_preview(path: Path) -> dict[str, object]:
+    samples, sample_rate = sf.read(path, dtype="float64", always_2d=True)
+    mono = samples.mean(axis=1)
+    if mono.size:
+        bin_width = max(1, math.ceil(len(mono) / 180))
+        peaks = [
+            float(abs(mono[start : start + bin_width]).max())
+            for start in range(0, len(mono), bin_width)
+        ]
+        peak = max(peaks)
+        waveform = [value / peak for value in peaks] if peak > 0 else peaks
+        rms = math.sqrt(float((mono**2).mean()))
+    else:
+        waveform = []
+        rms = 0.0
+    return {
+        "sample_rate": sample_rate,
+        "duration_seconds": len(mono) / sample_rate if sample_rate > 0 else 0.0,
+        "waveform": waveform,
+        "rms_dbfs": 20.0 * math.log10(max(rms, 1e-12)),
+    }
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:

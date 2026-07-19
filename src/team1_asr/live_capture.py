@@ -21,6 +21,7 @@ _SUPPORTED_MEDIA_TYPES = {
 
 @dataclass(frozen=True)
 class CaptureArtifacts:
+    source_path: Path
     audio_path: Path
     video_path: Path
     reliability: dict[str, object]
@@ -83,6 +84,7 @@ class BrowserCapturePreparer:
             message = "Mouth ROI and visual reliability metadata are ready."
         else:
             artifacts = CaptureArtifacts(
+                source_path=recording_path,
                 audio_path=audio_path,
                 video_path=recording_path,
                 reliability={
@@ -178,7 +180,7 @@ class BrowserCapturePreparer:
         roi_path = Path(manifest_rows[0]["video_path"])
         if not roi_path.is_absolute():
             roi_path = (output_dir / roi_path).resolve()
-        return CaptureArtifacts(audio_path, roi_path, reliability)
+        return CaptureArtifacts(recording_path, audio_path, roi_path, reliability)
 
 
 def capture_suffix(content_type: str) -> str:
