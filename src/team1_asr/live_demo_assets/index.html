@@ -142,6 +142,34 @@
         <span class="threshold-label" id="threshold-label">Threshold 0.50</span>
       </div>
 
+      <section class="transcript-monitor" aria-labelledby="transcript-title">
+        <div class="transcript-heading">
+          <div>
+            <p class="eyebrow">Live transcripts</p>
+            <h3 id="transcript-title">Recognition output</h3>
+          </div>
+          <span id="transcript-selection">No selection</span>
+        </div>
+        <div class="transcript-grid">
+          <article class="transcript-output" id="whisper-transcript-card" data-system="whisper">
+            <header>
+              <strong>Whisper</strong>
+              <span id="whisper-transcript-status">Waiting</span>
+            </header>
+            <p id="whisper-live-transcript" aria-live="polite">Waiting for the audio first pass.</p>
+            <div class="transcript-segments" id="whisper-segments"></div>
+          </article>
+          <article class="transcript-output" id="avec-transcript-card" data-system="avec">
+            <header>
+              <strong>AVEC</strong>
+              <span id="avec-transcript-status">Waiting</span>
+            </header>
+            <p id="avec-live-transcript" aria-live="polite">Waiting for the routing decision.</p>
+            <div class="transcript-segments" id="avec-segments"></div>
+          </article>
+        </div>
+      </section>
+
       <div class="trace-list" id="trace-list" aria-live="polite">
         <div class="trace-empty" id="trace-empty">
           <span class="trace-line"></span>

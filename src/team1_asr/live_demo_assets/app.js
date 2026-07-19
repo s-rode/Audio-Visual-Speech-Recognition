@@ -41,6 +41,15 @@ const ui = {
   captureWaveform: document.querySelector("#capture-waveform"),
   artifactStatus: document.querySelector("#artifact-status"),
   telemetry: document.querySelector("#telemetry-grid"),
+  transcriptSelection: document.querySelector("#transcript-selection"),
+  whisperTranscriptCard: document.querySelector("#whisper-transcript-card"),
+  whisperTranscriptStatus: document.querySelector("#whisper-transcript-status"),
+  whisperLiveTranscript: document.querySelector("#whisper-live-transcript"),
+  whisperSegments: document.querySelector("#whisper-segments"),
+  avecTranscriptCard: document.querySelector("#avec-transcript-card"),
+  avecTranscriptStatus: document.querySelector("#avec-transcript-status"),
+  avecLiveTranscript: document.querySelector("#avec-live-transcript"),
+  avecSegments: document.querySelector("#avec-segments"),
   elapsed: document.querySelector("#elapsed"),
   trace: document.querySelector("#trace-list"),
   score: document.querySelector("#score-value"),
@@ -627,8 +636,85 @@ function clearCaptureInspector() {
   ui.captureInspector.hidden = true;
 }
 
+function transcriptUi(system) {
+  return system === "whisper"
+    ? {
+        card: ui.whisperTranscriptCard,
+        status: ui.whisperTranscriptStatus,
+        text: ui.whisperLiveTranscript,
+        segments: ui.whisperSegments,
+      }
+    : {
+        card: ui.avecTranscriptCard,
+        status: ui.avecTranscriptStatus,
+        text: ui.avecLiveTranscript,
+        segments: ui.avecSegments,
+      };
+}
+
+function updateTranscriptEvent(event) {
+  if (event.stage !== "whisper" && event.stage !== "avec") return;
+  const target = transcriptUi(event.stage);
+  target.card.classList.remove("running", "complete", "skipped");
+  target.card.classList.add(event.status);
+  if (event.status === "running") {
+    target.status.textContent = "Transcribing";
+    target.text.textContent = event.stage === "whisper"
+      ? "Listening to the extracted microphone audio..."
+      : "Fusing audio with the visual stream...";
+  } else if (event.status === "complete") {
+    target.status.textContent = "Complete";
+    target.text.textContent = event.transcript || "No speech detected.";
+  } else if (event.status === "skipped") {
+    target.status.textContent = "Skipped";
+    target.text.textContent = "Skipped by the routing policy.";
+  }
+}
+
+function renderTranscriptResult(system, transcript) {
+  if (!transcript) return;
+  const target = transcriptUi(system);
+  target.status.textContent = "Complete";
+  target.text.textContent = transcript.text || "No speech detected.";
+  target.card.classList.remove("running", "skipped");
+  target.card.classList.add("complete");
+  target.segments.replaceChildren();
+  for (const segment of transcript.segments || []) {
+    const row = document.createElement("div");
+    row.className = "transcript-segment";
+    const timestamp = document.createElement("time");
+    timestamp.textContent = formatTimestamp(segment.start) + " - " + formatTimestamp(segment.end);
+    const text = document.createElement("p");
+    text.textContent = segment.text || "No speech";
+    const confidence = document.createElement("span");
+    confidence.textContent = segment.avg_logprob == null
+      ? ""
+      : "log p " + Number(segment.avg_logprob).toFixed(2);
+    row.append(timestamp, text, confidence);
+    target.segments.append(row);
+  }
+}
+
+function resetTranscriptMonitor() {
+  ui.transcriptSelection.textContent = "No selection";
+  for (const system of ["whisper", "avec"]) {
+    const target = transcriptUi(system);
+    target.card.classList.remove("running", "complete", "skipped", "selected");
+    target.status.textContent = "Waiting";
+    target.segments.replaceChildren();
+  }
+  ui.whisperLiveTranscript.textContent = "Waiting for the audio first pass.";
+  ui.avecLiveTranscript.textContent = "Waiting for the routing decision.";
+}
+
+function formatTimestamp(value) {
+  const seconds = Number(value);
+  return Number.isFinite(seconds) ? seconds.toFixed(2) + "s" : "--";
+}
+
 function handleEvent(event) {
   appendTrace(event);
+  updateTranscriptEvent(event);
   if (event.stage === "media" && event.media) showCaptureMedia(event.media);
   if (event.features) {
     routeFeatures = { ...routeFeatures, ...event.features };
@@ -705,6 +791,12 @@ function traceDetail(event) {
 }
 
 function renderResult(result) {
+  renderTranscriptResult("whisper", result.whisper_transcript);
+  renderTranscriptResult("avec", result.avec_transcript);
+  const selectedTranscript = String(result.selected_system || "").toLowerCase();
+  ui.whisperTranscriptCard.classList.toggle("selected", selectedTranscript === "whisper");
+  ui.avecTranscriptCard.classList.toggle("selected", selectedTranscript === "avec");
+  ui.transcriptSelection.textContent = result.selected_system + " selected";
   if (result.features) {
     routeFeatures = { ...routeFeatures, ...result.features };
     renderTelemetry();
@@ -744,6 +836,7 @@ function resetRoute() {
   ui.selectedSystem.textContent = "No route yet";
   ui.resultText.textContent = "The final transcription will appear here.";
   ui.comparison.hidden = true;
+  resetTranscriptMonitor();
   clearCaptureInspector();
   ui.trace.innerHTML = '<div class="trace-empty" id="trace-empty"><span class="trace-line"></span><p>Start an input to stream the inference trace.</p></div>';
   for (const node of document.querySelectorAll(".pipeline-node")) {

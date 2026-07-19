@@ -123,6 +123,15 @@ class LiveDemoServerTest(unittest.TestCase):
         with urlopen(f"{self.base_url}{event['media']['source_url']}") as response:
             self.assertEqual(response.read(), b"source capture")
 
+    def test_page_exposes_both_live_transcript_panels(self) -> None:
+        with urlopen(f"{self.base_url}/") as response:
+            page = response.read().decode("utf-8")
+
+        self.assertIn("whisper-live-transcript", page)
+        self.assertIn("avec-live-transcript", page)
+        self.assertIn("whisper-segments", page)
+        self.assertIn("avec-segments", page)
+
     def test_static_media_supports_byte_ranges(self) -> None:
         request = Request(
             f"{self.base_url}/app.js",

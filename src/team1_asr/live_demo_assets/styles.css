@@ -569,6 +569,105 @@ input[type="range"] {
 
 .threshold-label { white-space: nowrap; }
 
+.transcript-monitor {
+  margin-top: 20px;
+}
+
+.transcript-heading {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.transcript-heading h3 {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: 0;
+}
+
+.transcript-heading > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.transcript-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.transcript-output {
+  min-width: 0;
+  padding: 13px 14px;
+  background: white;
+  border: 1px solid var(--line);
+  border-top: 3px solid #879397;
+  border-radius: var(--radius);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.transcript-output.running { border-top-color: var(--coral); }
+.transcript-output.complete { border-top-color: var(--green); }
+.transcript-output.skipped { opacity: 0.62; }
+.transcript-output.selected { box-shadow: 0 0 0 3px rgba(22, 162, 173, 0.2); }
+
+.transcript-output header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.transcript-output header strong { font-size: 13px; }
+.transcript-output header span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.transcript-output > p {
+  min-height: 40px;
+  margin: 10px 0 0;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.transcript-segments {
+  max-height: 138px;
+  overflow: auto;
+  margin-top: 10px;
+}
+
+.transcript-segment {
+  padding: 8px 0;
+  display: grid;
+  grid-template-columns: 74px 1fr auto;
+  gap: 9px;
+  border-top: 1px solid var(--line);
+  font-size: 10px;
+}
+
+.transcript-segment time,
+.transcript-segment span {
+  color: var(--muted);
+  font: 700 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+}
+
+.transcript-segment p {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
 .trace-list {
   min-height: 250px;
   max-height: 330px;
@@ -852,6 +951,7 @@ footer {
   .trace-item { grid-template-columns: 72px 1fr; }
   .trace-status { grid-column: 2; }
   .comparison { grid-template-columns: 1fr; }
+  .transcript-grid { grid-template-columns: 1fr; }
   .capture-actions { grid-template-columns: 1fr; }
   .telemetry-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .inspector-view video { height: 190px; }
