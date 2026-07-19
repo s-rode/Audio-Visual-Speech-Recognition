@@ -26,28 +26,33 @@
       <div class="section-heading">
         <div>
           <p class="eyebrow">Input stream</p>
-          <h1 id="input-title">Route a sample</h1>
+          <h1 id="input-title">Live input</h1>
         </div>
         <span class="mode-chip" id="mode-chip">Demo</span>
       </div>
 
-      <div class="sample-switcher" id="sample-switcher" role="tablist" aria-label="Samples"></div>
+      <div class="input-mode-switcher" role="tablist" aria-label="Input source">
+        <button id="samples-mode" type="button" role="tab">Samples</button>
+        <button id="capture-mode" type="button" role="tab" class="active">Camera + mic</button>
+      </div>
+
+      <div class="sample-switcher" id="sample-switcher" data-sample-only role="tablist" aria-label="Samples" hidden></div>
 
       <div class="media-stage">
-        <video id="video-preview" controls playsinline hidden></video>
-        <canvas id="signal-canvas" aria-label="Audio waveform preview"></canvas>
+        <video id="video-preview" autoplay muted playsinline></video>
+        <canvas id="signal-canvas" aria-label="Audio waveform preview" hidden></canvas>
         <div class="media-overlay">
-          <span id="condition-label">Signal preview</span>
-          <span id="duration-label">3.2 s</span>
+          <span id="condition-label">Camera offline</span>
+          <span id="duration-label">5 s window</span>
         </div>
       </div>
 
-      <div class="reference-block">
+      <div class="reference-block" data-sample-only hidden>
         <span>Reference</span>
         <p id="reference-text">Loading sample...</p>
       </div>
 
-      <div class="signal-controls" id="signal-controls">
+      <div class="signal-controls" id="signal-controls" data-sample-only hidden>
         <div class="control-row">
           <label for="audio-confidence">Whisper log probability</label>
           <output id="audio-confidence-value">-0.34</output>
@@ -70,10 +75,26 @@
         </label>
       </div>
 
-      <button class="run-button" id="run-button" type="button">
+      <button class="run-button" id="run-button" data-sample-only type="button" hidden>
         <span>Run live route</span>
         <span class="button-state" id="button-state">Ready</span>
       </button>
+      <div class="capture-controls" id="capture-controls">
+        <div class="device-status">
+          <span class="device-dot" id="device-dot"></span>
+          <div>
+            <strong id="device-title">Camera and microphone off</strong>
+            <small id="device-copy">Browser permission required</small>
+          </div>
+        </div>
+        <div class="capture-actions">
+          <button class="secondary-button" id="enable-camera" type="button">Enable devices</button>
+          <button class="run-button" id="record-button" type="button" disabled>
+            <span>Record 5 seconds</span>
+            <span class="button-state" id="record-state">Offline</span>
+          </button>
+        </div>
+      </div>
     </section>
 
     <section class="routing-panel" aria-labelledby="routing-title">
@@ -120,7 +141,7 @@
       <div class="trace-list" id="trace-list" aria-live="polite">
         <div class="trace-empty" id="trace-empty">
           <span class="trace-line"></span>
-          <p>Run a sample to stream the inference trace.</p>
+          <p>Start an input to stream the inference trace.</p>
         </div>
       </div>
 

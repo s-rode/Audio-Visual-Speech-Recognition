@@ -248,9 +248,15 @@ does not load either model:
 uv run team1-router-demo
 ~~~
 
-Open http://127.0.0.1:7860 and switch between the clear-room and street-noise
-samples. The signal controls exercise the same policy evaluator used by real
-mode.
+Open http://127.0.0.1:7860, allow camera and microphone access, and record a
+five-second synchronized window. The server extracts 16 kHz mono audio, checks
+the video stream, runs Whisper, and shows whether the frozen router keeps the
+Whisper result or invokes AVEC. The Samples tab retains the clear-room and
+street-noise controls for deterministic presentations.
+
+In real mode, live browser captures also pass through the AVEC mouth-ROI
+preprocessor. That requires the AVEC repository, its configured Python
+environment, and face-detection dependencies to be available.
 
 Real mode reads samples from an AVEC mouth-ROI manifest and its preprocessing
 reliability CSV. It lazily loads both backends and serves only media paths listed

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import unittest
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from team1_asr.live_demo import build_mock_application, create_server
@@ -25,6 +26,7 @@ class LiveDemoServerTest(unittest.TestCase):
             state = json.load(response)
 
         self.assertEqual(state["mode"], "mock")
+        self.assertTrue(state["capture_enabled"])
         self.assertEqual([sample["id"] for sample in state["samples"]], [
             "clear-room",
             "street-noise",
@@ -59,6 +61,21 @@ class LiveDemoServerTest(unittest.TestCase):
         avec = next(event for event in events if event["stage"] == "avec")
         self.assertEqual(avec["status"], "skipped")
         self.assertEqual(events[-1]["result"]["selected_system"], "Whisper")
+
+    def test_live_capture_rejects_unsupported_media(self) -> None:
+        request = Request(
+            f"{self.base_url}/api/live-route",
+            data=b"not a recording",
+            headers={"Content-Type": "audio/wav"},
+            method="POST",
+        )
+
+        with self.assertRaises(HTTPError) as caught:
+            urlopen(request)
+
+        self.assertEqual(caught.exception.code, 400)
+        error = json.loads(caught.exception.read())
+        self.assertIn("Unsupported capture media type", error["error"])
 
     def _route(
         self,

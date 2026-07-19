@@ -163,6 +163,110 @@ h1, h2 {
   font-weight: 700;
 }
 
+.input-mode-switcher {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 3px;
+  margin-bottom: 14px;
+  background: #dfe5e6;
+  border-radius: var(--radius);
+}
+
+.input-mode-switcher button {
+  min-height: 38px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.input-mode-switcher button.active {
+  color: white;
+  background: var(--ink);
+}
+
+.capture-controls {
+  padding-top: 16px;
+}
+
+.device-status {
+  min-height: 54px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.device-status > div {
+  display: grid;
+  gap: 2px;
+}
+
+.device-status strong {
+  font-size: 13px;
+}
+
+.device-status small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.device-dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #899598;
+}
+
+.device-dot.ready {
+  background: var(--green);
+}
+
+.device-dot.recording {
+  background: var(--coral);
+  animation: pulse 900ms ease-in-out infinite;
+}
+
+.capture-actions {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(170px, 1.2fr);
+  gap: 10px;
+  padding-top: 14px;
+}
+
+.secondary-button {
+  min-height: 48px;
+  padding: 0 14px;
+  color: var(--ink);
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.secondary-button:hover {
+  border-color: var(--ink);
+}
+
+.live-preview {
+  transform: scaleX(-1);
+}
+
+.media-stage.recording {
+  box-shadow: 0 0 0 3px rgba(240, 93, 68, 0.28);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
 .sample-switcher {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -605,6 +709,7 @@ footer {
   .trace-item { grid-template-columns: 72px 1fr; }
   .trace-status { grid-column: 2; }
   .comparison { grid-template-columns: 1fr; }
+  .capture-actions { grid-template-columns: 1fr; }
   .comparison div + div { padding-left: 0; border-left: 0; }
   footer { display: none; }
 }

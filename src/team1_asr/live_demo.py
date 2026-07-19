@@ -4,23 +4,31 @@ import argparse
 import csv
 from dataclasses import dataclass
 import json
+import math
 import mimetypes
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 from urllib.parse import urlparse
+from uuid import uuid4
+
+import soundfile as sf
 
 from team1_asr.backends.base import ASRBackend, TranscriptionRequest
 from team1_asr.backends.factory import create_backend
 from team1_asr.config import load_config
+from team1_asr.live_capture import BrowserCapturePreparer, capture_suffix
 from team1_asr.live_router import LiveRouter, load_policy
+from team1_asr.router_features import extract_live_features
 from team1_asr.types import Segment, Transcript
 
 
 _ASSET_DIR = Path(__file__).with_name("live_demo_assets")
+_MAX_CAPTURE_BYTES = 32 * 1024 * 1024
 _OVERRIDE_RANGES = {
     "audio_avg_logprob_mean": (-2.0, 0.0),
     "mouth_landmark_confidence_mean": (0.0, 1.0),
@@ -66,6 +74,7 @@ class DemoApplication:
         self,
         router: LiveRouter,
         samples: list[DemoSample],
+        capture_preparer: BrowserCapturePreparer,
         *,
         mode: str,
     ) -> None:
@@ -73,12 +82,14 @@ class DemoApplication:
             raise ValueError("The live demo requires at least one sample.")
         self.router = router
         self.samples = {sample.utterance_id: sample for sample in samples}
+        self.capture_preparer = capture_preparer
         self.mode = mode
         self.lock = threading.Lock()
 
     def state(self) -> dict[str, object]:
         return {
             "mode": self.mode,
+            "capture_enabled": True,
             "policy": {
                 "type": self.router.policy.get("policy_type"),
                 "threshold": self.router.policy.get("threshold"),
@@ -123,6 +134,37 @@ class DemoApplication:
                 emit=emit,
             )
 
+    def run_capture(
+        self,
+        payload: bytes,
+        content_type: str,
+        emit: Callable[[dict[str, object]], None],
+    ) -> None:
+        if not payload:
+            raise ValueError("Camera capture is empty.")
+        utterance_id = f"live-{uuid4().hex[:12]}"
+        with TemporaryDirectory(prefix="team1-live-capture-") as temp_dir:
+            with self.lock:
+                artifacts = self.capture_preparer.prepare(
+                    payload,
+                    content_type,
+                    Path(temp_dir),
+                    utterance_id,
+                    emit,
+                )
+                request = TranscriptionRequest(
+                    audio_path=str(artifacts.audio_path),
+                    video_path=str(artifacts.video_path),
+                    language="en",
+                    utterance_id=utterance_id,
+                    video_preprocessing="preprocessed",
+                )
+                self.router.route(
+                    request,
+                    artifacts.reliability,
+                    emit=emit,
+                )
+
     def media_path(self, sample_id: str, kind: str) -> Path | None:
         sample = self.samples.get(sample_id)
         if sample is None or self.mode != "real":
@@ -157,33 +199,62 @@ class _MockBackend:
 
     def transcribe(self, request: TranscriptionRequest) -> Transcript:
         time.sleep(self.delay)
-        noisy = request.utterance_id != "clear-room"
-        if self.kind == "whisper":
-            text = (
-                "Route the clean signal through the audio path."
-                if not noisy
-                else "Move the meeting to the main room."
+        live = bool(request.utterance_id and request.utterance_id.startswith("live-"))
+        if live:
+            samples, sample_rate = sf.read(
+                request.audio_path,
+                dtype="float64",
+                always_2d=True,
             )
-            avg_logprob = -0.34 if not noisy else -1.24
+            mono = samples.mean(axis=1)
+            rms = math.sqrt(float((mono**2).mean())) if mono.size else 0.0
+            dbfs = 20.0 * math.log10(max(rms, 1e-12))
+            confidence = max(0.0, min(1.0, (dbfs + 55.0) / 35.0))
+            live_logprob = -1.6 + 1.35 * confidence
+            noisy = live_logprob <= -0.8
+            duration = len(mono) / sample_rate if sample_rate > 0 else 0.0
+        else:
+            noisy = request.utterance_id != "clear-room"
+            live_logprob = -1.24 if noisy else -0.34
+            duration = 3.2
+
+        if self.kind == "whisper":
+            if live:
+                text = (
+                    "Live microphone signal is clear."
+                    if not noisy
+                    else "Live microphone signal needs visual context."
+                )
+            else:
+                text = (
+                    "Route the clean signal through the audio path."
+                    if not noisy
+                    else "Move the meeting to the main room."
+                )
+            avg_logprob = live_logprob
         else:
             text = (
-                "Route the clean signal through the audio path."
-                if not noisy
-                else "Move the meeting to the quiet room."
+                "Live audio visual signal received."
+                if live
+                else (
+                    "Route the clean signal through the audio path."
+                    if not noisy
+                    else "Move the meeting to the quiet room."
+                )
             )
             avg_logprob = None
         return Transcript(
             text=text,
             language="en",
-            duration=3.2,
+            duration=duration,
             segments=[
                 Segment(
                     start=0.0,
-                    end=3.2,
+                    end=duration,
                     text=text,
                     avg_logprob=avg_logprob,
                     compression_ratio=1.08,
-                    no_speech_prob=0.02,
+                    no_speech_prob=0.7 if live and noisy else 0.02,
                     temperature=0.0,
                 )
             ],
@@ -320,6 +391,8 @@ def build_mock_application(*, delay: float = 0.18) -> DemoApplication:
         video_path: Path | None,
         transcript: Transcript,
     ) -> dict[str, object]:
+        if audio_path.exists() and video_path is not None and video_path.exists():
+            return extract_live_features(audio_path, video_path, transcript)
         segment = transcript.segments[0]
         return {
             "audio_avg_logprob_mean": segment.avg_logprob,
@@ -337,7 +410,12 @@ def build_mock_application(*, delay: float = 0.18) -> DemoApplication:
         _MockBackend("avec", delay),
         feature_extractor=mock_features,
     )
-    return DemoApplication(router, samples, mode="mock")
+    return DemoApplication(
+        router,
+        samples,
+        BrowserCapturePreparer(real_preprocessing=False),
+        mode="mock",
+    )
 
 
 def _build_real_application(args: argparse.Namespace) -> DemoApplication:
@@ -376,7 +454,17 @@ def _build_real_application(args: argparse.Namespace) -> DemoApplication:
         _LazyBackend(lambda: create_backend(whisper_config)),
         _LazyBackend(lambda: create_backend(avec_config)),
     )
-    return DemoApplication(router, samples, mode="real")
+    capture_preparer = BrowserCapturePreparer(
+        real_preprocessing=True,
+        repo_path=avec_config.repo_path,
+        python_executable=avec_config.python_executable,
+    )
+    return DemoApplication(
+        router,
+        samples,
+        capture_preparer,
+        mode="real",
+    )
 
 
 class _DemoHandler(BaseHTTPRequestHandler):
@@ -397,7 +485,11 @@ class _DemoHandler(BaseHTTPRequestHandler):
         self._send_file(_ASSET_DIR / asset)
 
     def do_POST(self) -> None:
-        if urlparse(self.path).path != "/api/route":
+        path = urlparse(self.path).path
+        if path == "/api/live-route":
+            self._handle_live_capture()
+            return
+        if path != "/api/route":
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         try:
@@ -412,7 +504,35 @@ class _DemoHandler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError) as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
             return
+        self._stream(lambda emit: self.app.run_route(sample_id, overrides, emit))
 
+    def _handle_live_capture(self) -> None:
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+            if length <= 0:
+                raise ValueError("Camera capture is empty.")
+            if length > _MAX_CAPTURE_BYTES:
+                self.send_error(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    "Camera capture exceeds the 32 MB limit.",
+                )
+                return
+            content_type = self.headers.get("Content-Type") or ""
+            capture_suffix(content_type)
+            payload = self.rfile.read(length)
+            if len(payload) != length:
+                raise ValueError("Camera capture ended before all bytes were received.")
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        self._stream(
+            lambda emit: self.app.run_capture(payload, content_type, emit)
+        )
+
+    def _stream(
+        self,
+        action: Callable[[Callable[[dict[str, object]], None]], None],
+    ) -> None:
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -423,7 +543,7 @@ class _DemoHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
         try:
-            self.app.run_route(sample_id, overrides, emit)
+            action(emit)
         except (BrokenPipeError, ConnectionResetError):
             return
         except Exception as exc:

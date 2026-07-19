@@ -3,8 +3,12 @@ const ui = {
   modeLabel: document.querySelector("#mode-label"),
   modeChip: document.querySelector("#mode-chip"),
   policyLabel: document.querySelector("#policy-label"),
+  samplesMode: document.querySelector("#samples-mode"),
+  captureMode: document.querySelector("#capture-mode"),
+  sampleOnly: document.querySelectorAll("[data-sample-only]"),
   sampleSwitcher: document.querySelector("#sample-switcher"),
   conditionLabel: document.querySelector("#condition-label"),
+  durationLabel: document.querySelector("#duration-label"),
   referenceText: document.querySelector("#reference-text"),
   canvas: document.querySelector("#signal-canvas"),
   video: document.querySelector("#video-preview"),
@@ -16,6 +20,15 @@ const ui = {
   roi: document.querySelector("#roi-ready"),
   run: document.querySelector("#run-button"),
   buttonState: document.querySelector("#button-state"),
+  captureControls: document.querySelector("#capture-controls"),
+  enableCamera: document.querySelector("#enable-camera"),
+  record: document.querySelector("#record-button"),
+  recordState: document.querySelector("#record-state"),
+  deviceDot: document.querySelector("#device-dot"),
+  deviceTitle: document.querySelector("#device-title"),
+  deviceCopy: document.querySelector("#device-copy"),
+  mediaStage: document.querySelector(".media-stage"),
+  inputTitle: document.querySelector("#input-title"),
   elapsed: document.querySelector("#elapsed"),
   trace: document.querySelector("#trace-list"),
   score: document.querySelector("#score-value"),
@@ -31,6 +44,8 @@ const ui = {
 };
 
 const stageLabels = {
+  capture: "Capture",
+  preprocess: "Preprocess",
   whisper: "Whisper",
   features: "Features",
   router: "Router",
@@ -44,6 +59,9 @@ let selectedSample = null;
 let routeStarted = 0;
 let timer = null;
 let waveformPhase = 0;
+let inputMode = "capture";
+let mediaStream = null;
+let mediaRecorder = null;
 
 async function loadState() {
   try {
@@ -53,7 +71,6 @@ async function loadState() {
     ui.serverDot.classList.add("online");
     ui.modeLabel.textContent = state.mode === "real" ? "Real backends online" : "Presentation runtime";
     ui.modeChip.textContent = state.mode === "real" ? "Real" : "Demo";
-    ui.controls.hidden = state.mode === "real";
     ui.policyLabel.textContent = `${state.policy.type} policy · ${state.policy.audio_system} / ${state.policy.av_system}`;
     const threshold = Number(state.policy.threshold);
     ui.threshold.textContent = Number.isFinite(threshold)
@@ -64,10 +81,113 @@ async function loadState() {
       : "50%";
     renderSamples();
     selectSample(state.samples[0].id);
+    setInputMode("capture");
   } catch (error) {
     ui.modeLabel.textContent = "Server unavailable";
     showError(error.message);
   }
+}
+
+function setInputMode(mode) {
+  inputMode = mode;
+  const capture = mode === "capture";
+  ui.samplesMode.classList.toggle("active", !capture);
+  ui.captureMode.classList.toggle("active", capture);
+  ui.samplesMode.setAttribute("aria-selected", String(!capture));
+  ui.captureMode.setAttribute("aria-selected", String(capture));
+  for (const element of ui.sampleOnly) {
+    element.hidden = capture;
+  }
+  ui.controls.hidden = capture || state.mode === "real";
+  ui.captureControls.hidden = !capture;
+  ui.inputTitle.textContent = capture ? "Live input" : "Route a sample";
+  resetRoute();
+
+  if (capture) {
+    ui.canvas.hidden = true;
+    ui.video.hidden = false;
+    ui.video.controls = false;
+    ui.video.muted = true;
+    ui.video.classList.add("live-preview");
+    ui.video.removeAttribute("src");
+    ui.video.load();
+    ui.durationLabel.textContent = "5 s window";
+    ui.conditionLabel.textContent = mediaStream ? "Camera ready" : "Camera offline";
+    if (mediaStream) ui.video.srcObject = mediaStream;
+  } else {
+    stopCamera();
+    ui.video.classList.remove("live-preview");
+    configureMedia();
+    ui.conditionLabel.textContent = selectedSample.condition;
+  }
+}
+
+async function enableCamera() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    showError("Camera and microphone capture is unavailable in this browser.");
+    return;
+  }
+  ui.enableCamera.disabled = true;
+  setDeviceState("Requesting browser permission", "Waiting for camera and microphone", "");
+  try {
+    stopCamera();
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: false,
+        autoGainControl: false,
+      },
+      video: {
+        width: { ideal: 640 },
+        height: { ideal: 360 },
+        frameRate: { ideal: 25, max: 30 },
+        facingMode: "user",
+      },
+    });
+    ui.video.removeAttribute("src");
+    ui.video.srcObject = mediaStream;
+    await ui.video.play();
+    for (const track of mediaStream.getTracks()) {
+      track.addEventListener("ended", () => {
+        if (mediaStream && mediaStream.getTracks().every((item) => item.readyState === "ended")) {
+          stopCamera();
+        }
+      });
+    }
+    ui.record.disabled = false;
+    ui.recordState.textContent = "Ready";
+    ui.enableCamera.textContent = "Reset devices";
+    ui.conditionLabel.textContent = "Camera ready";
+    setDeviceState("Camera and microphone ready", "Five-second synchronized window", "ready");
+  } catch (error) {
+    stopCamera();
+    showError(error.message || "Camera and microphone permission was denied.");
+  } finally {
+    ui.enableCamera.disabled = false;
+  }
+}
+
+function stopCamera() {
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    mediaRecorder.stop();
+  }
+  mediaRecorder = null;
+  if (mediaStream) {
+    for (const track of mediaStream.getTracks()) track.stop();
+  }
+  mediaStream = null;
+  ui.video.srcObject = null;
+  ui.record.disabled = true;
+  ui.recordState.textContent = "Offline";
+  ui.conditionLabel.textContent = "Camera offline";
+  setDeviceState("Camera and microphone off", "Browser permission required", "");
+}
+
+function setDeviceState(title, copy, status) {
+  ui.deviceTitle.textContent = title;
+  ui.deviceCopy.textContent = copy;
+  ui.deviceDot.classList.remove("ready", "recording");
+  if (status) ui.deviceDot.classList.add(status);
 }
 
 function renderSamples() {
@@ -115,7 +235,12 @@ function selectSample(sampleId) {
 }
 
 function configureMedia() {
+  if (inputMode === "capture") return;
   const realVideo = state.mode === "real" && selectedSample.has_video;
+  ui.video.srcObject = null;
+  ui.video.controls = realVideo;
+  ui.video.muted = !realVideo;
+  ui.durationLabel.textContent = realVideo ? "Recorded sample" : "3.2 s";
   ui.video.hidden = !realVideo;
   ui.canvas.hidden = realVideo;
   if (realVideo) {
@@ -187,23 +312,7 @@ async function runRoute() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sample_id: selectedSample.id, overrides }),
     });
-    if (!response.ok || !response.body) {
-      throw new Error(`Route request failed with ${response.status}`);
-    }
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let pending = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      pending += decoder.decode(value || new Uint8Array(), { stream: !done });
-      const lines = pending.split("\n");
-      pending = lines.pop() || "";
-      for (const line of lines) {
-        if (line.trim()) handleEvent(JSON.parse(line));
-      }
-      if (done) break;
-    }
-    if (pending.trim()) handleEvent(JSON.parse(pending));
+    await readEventStream(response);
   } catch (error) {
     showError(error.message);
   } finally {
@@ -213,6 +322,129 @@ async function runRoute() {
     ui.run.disabled = false;
     ui.buttonState.textContent = "Ready";
   }
+}
+
+async function recordCapture() {
+  if (!mediaStream || mediaRecorder || ui.record.disabled) return;
+  resetRoute();
+  ui.record.disabled = true;
+  ui.enableCamera.disabled = true;
+  ui.samplesMode.disabled = true;
+  ui.captureMode.disabled = true;
+  ui.mediaStage.classList.add("recording");
+  setDeviceState("Recording live window", "Speak while facing the camera", "recording");
+  routeStarted = performance.now();
+  timer = window.setInterval(updateElapsed, 50);
+
+  try {
+    const mimeType = preferredCaptureType();
+    const options = mimeType ? { mimeType, videoBitsPerSecond: 1_500_000 } : undefined;
+    const chunks = [];
+    const recorder = new MediaRecorder(mediaStream, options);
+    mediaRecorder = recorder;
+    recorder.addEventListener("dataavailable", (event) => {
+      if (event.data.size) chunks.push(event.data);
+    });
+    const stopped = new Promise((resolve, reject) => {
+      recorder.addEventListener("stop", resolve, { once: true });
+      recorder.addEventListener(
+        "error",
+        (event) => reject(event.error || new Error("Media recording failed.")),
+        { once: true },
+      );
+    });
+
+    recorder.start(250);
+    for (let remaining = 5; remaining > 0; remaining -= 1) {
+      ui.recordState.textContent = `${remaining}s`;
+      ui.durationLabel.textContent = `${remaining} s remaining`;
+      await delay(1000);
+      if (recorder.state === "inactive") break;
+    }
+    if (recorder.state !== "inactive") recorder.stop();
+    await stopped;
+
+    const blobType = recorder.mimeType || mimeType || "video/webm";
+    const recording = new Blob(chunks, { type: blobType });
+    if (!recording.size) throw new Error("The browser produced an empty recording.");
+    ui.recordState.textContent = "Routing";
+    ui.durationLabel.textContent = formatBytes(recording.size);
+    ui.conditionLabel.textContent = "Uploading synchronized capture";
+
+    const response = await fetch("/api/live-route", {
+      method: "POST",
+      headers: { "Content-Type": recording.type },
+      body: recording,
+    });
+    await readEventStream(response);
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    mediaRecorder = null;
+    window.clearInterval(timer);
+    timer = null;
+    updateElapsed();
+    ui.mediaStage.classList.remove("recording");
+    ui.record.disabled = !mediaStream;
+    ui.enableCamera.disabled = false;
+    ui.samplesMode.disabled = false;
+    ui.captureMode.disabled = false;
+    ui.recordState.textContent = mediaStream ? "Ready" : "Offline";
+    ui.durationLabel.textContent = "5 s window";
+    if (mediaStream) {
+      ui.conditionLabel.textContent = "Camera ready";
+      setDeviceState("Camera and microphone ready", "Five-second synchronized window", "ready");
+    }
+  }
+}
+
+function preferredCaptureType() {
+  const candidates = [
+    "video/webm;codecs=vp8,opus",
+    "video/webm;codecs=vp9,opus",
+    "video/webm",
+    "video/mp4",
+  ];
+  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+}
+
+async function readEventStream(response) {
+  if (!response.ok) {
+    const body = await response.text();
+    let message = `Route request failed with ${response.status}`;
+    try {
+      message = JSON.parse(body).error || message;
+    } catch {
+      if (body.trim()) message = body.trim();
+    }
+    throw new Error(message);
+  }
+  if (!response.body) throw new Error("Route response has no event stream.");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    pending += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = pending.split("\n");
+    pending = lines.pop() || "";
+    for (const line of lines) {
+      if (line.trim()) handleEvent(JSON.parse(line));
+    }
+    if (done) break;
+  }
+  if (pending.trim()) handleEvent(JSON.parse(pending));
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+function formatBytes(bytes) {
+  return bytes >= 1_000_000
+    ? `${(bytes / 1_000_000).toFixed(1)} MB`
+    : `${Math.ceil(bytes / 1000)} KB`;
 }
 
 function handleEvent(event) {
@@ -234,6 +466,10 @@ function handleEvent(event) {
   }
   if (event.stage === "result" && event.result) {
     renderResult(event.result);
+  }
+  if (event.stage === "error") {
+    ui.selectedSystem.textContent = "Route failed";
+    ui.resultText.textContent = event.message;
   }
 }
 
@@ -317,7 +553,7 @@ function resetRoute() {
   ui.selectedSystem.textContent = "No route yet";
   ui.resultText.textContent = "The final transcription will appear here.";
   ui.comparison.hidden = true;
-  ui.trace.innerHTML = '<div class="trace-empty" id="trace-empty"><span class="trace-line"></span><p>Run a sample to stream the inference trace.</p></div>';
+  ui.trace.innerHTML = '<div class="trace-empty" id="trace-empty"><span class="trace-line"></span><p>Start an input to stream the inference trace.</p></div>';
   for (const node of document.querySelectorAll(".pipeline-node")) {
     node.classList.remove("running", "complete", "skipped", "selected");
   }
@@ -352,5 +588,10 @@ ui.audio.addEventListener("input", syncControls);
 ui.mouth.addEventListener("input", syncControls);
 ui.roi.addEventListener("change", drawWaveform);
 ui.run.addEventListener("click", runRoute);
+ui.samplesMode.addEventListener("click", () => setInputMode("samples"));
+ui.captureMode.addEventListener("click", () => setInputMode("capture"));
+ui.enableCamera.addEventListener("click", enableCamera);
+ui.record.addEventListener("click", recordCapture);
 window.addEventListener("resize", drawWaveform);
+window.addEventListener("beforeunload", stopCamera);
 loadState();
