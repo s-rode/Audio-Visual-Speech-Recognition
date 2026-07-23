@@ -213,7 +213,9 @@ decay. Copy it into AVEC, set manifest_train and manifest_eval, then run:
 
 ~~~bash
 mkdir -p external/AVEC/configs/VoxMM
-cp configs/VoxMM/EffConfInterCTC_finetune.py external/AVEC/configs/VoxMM/
+cp configs/VoxMM/EffConfInterCTC_finetune.py \
+  configs/VoxMM/ctc_decoding.py \
+  external/AVEC/configs/VoxMM/
 
 cd external/AVEC
 .venv/bin/python3 main.py \
@@ -228,14 +230,143 @@ cd external/AVEC
 The AV checkpoint is expected at:
 
 ~~~text
-external/AVEC/callbacks/VoxMM/AV/EffConfInterCTC_finetune/checkpoints_epoch_12_step_7201.ckpt
+external/AVEC/callbacks/VoxMM/AV/EffConfInterCTC_finetune_dev_eval/checkpoints_epoch_12_step_7201.ckpt
 ~~~
 
 The matching audio-only checkpoint is expected at:
 
 ~~~text
-external/AVEC/callbacks/VoxMM/AO/EffConfInterCTC_finetune/checkpoints_epoch_6_step_3600.ckpt
+external/AVEC/callbacks/VoxMM/AO/EffConfCTC_finetune_dev_eval/checkpoints_epoch_6_step_3600.ckpt
 ~~~
+
+## Beam search and RoBERTa rescoring
+
+The current best VoxMM development recipe keeps the trained AVEC model fixed
+and changes only its CTC decoding:
+
+1. Run AVEC once and cache its CTC emissions.
+2. Use Flashlight beam search with a VoxMM in-domain 3-gram language model,
+   retaining the best 100 hypotheses per utterance.
+3. Score the best 50 hypotheses with `FacebookAI/roberta-base` and rerank them.
+
+On the clean 500-clip VoxMM development/evaluation manifest, the observed WERs
+were 16.12% for greedy CTC, 13.87% for the 3-gram beam, and 11.59% after
+RoBERTa reranking. The decoder weights were selected on this same set, so
+11.59% is a development result rather than a held-out test result.
+
+### Install the decoder
+
+Complete the AVEC setup above first. Then install the extra decoder packages
+into the same AVEC environment:
+
+~~~bash
+uv pip install --python external/AVEC/.venv/bin/python \
+  "flashlight-text==0.0.7" \
+  "transformers==4.47.1" \
+  "wandb>=0.17"
+~~~
+
+Copy both tracked VoxMM configuration files into the editable AVEC checkout:
+
+~~~bash
+mkdir -p external/AVEC/configs/VoxMM
+cp configs/VoxMM/EffConfInterCTC_finetune.py \
+  configs/VoxMM/ctc_decoding.py \
+  external/AVEC/configs/VoxMM/
+~~~
+
+Verify that the exact environment used by AVEC can load the decoder:
+
+~~~bash
+external/AVEC/.venv/bin/python -c \
+  'from torchaudio.models.decoder import ctc_decoder; import transformers; print("decoder dependencies OK")'
+~~~
+
+`ctcdecode` and the Python `kenlm` package are not needed. The working
+implementation is TorchAudio's Flashlight decoder from `flashlight-text`;
+TorchAudio reads the ARPA language model directly. Log in with `wandb login`
+once for online tracking, or prefix a run with `WANDB_MODE=offline`.
+
+### Expected inputs
+
+The default scripts expect these files:
+
+~~~text
+data/voxmm_preprocessed/manifest.train_no_dev_ids.local.csv
+data/voxmm_dev_eval/manifest.local.csv
+external/AVEC/datasets/LRS3/tokenizerbpe256.model
+external/AVEC/callbacks/VoxMM/AV/EffConfInterCTC_finetune_dev_eval/checkpoints_epoch_12_step_7201.ckpt
+~~~
+
+Both manifests must contain valid local paths. The training manifest excludes
+the development source IDs and supplies text for the in-domain language model;
+the evaluation manifest determines the order of samples in the emission cache.
+
+### Run the best recipe
+
+From the repository root, run AVEC once and save its emissions:
+
+~~~bash
+VOXMM_EMISSION_CACHE_DIR="$PWD/outputs/voxmm_emission_cache/epoch12" \
+  bash scripts/experimental/run_voxmm_best_beamsearch.sh
+~~~
+
+This command also builds
+`external/assets/lm/voxmm-3gram-d060/3-gram.arpa` from the training manifest
+when it is missing. It downloads a public LibriSpeech unigram list on the first
+run to expand the decoding lexicon. That list only determines which words the
+decoder can emit; the language probabilities come from the VoxMM 3-gram.
+
+The direct beam result is written to
+`outputs/voxmm_best_beamsearch/evaluation.log`. With 500 evaluation clips and
+the default batch size of 8, the cache contains 63 `batch_*.pt` files.
+
+Next, generate a 100-best list and apply the tuned RoBERTa reranker:
+
+~~~bash
+VOXMM_EMISSION_CACHE_DIR="$PWD/outputs/voxmm_emission_cache/epoch12" \
+  bash scripts/experimental/run_voxmm_roberta_rescore.sh
+~~~
+
+The first rescoring run downloads the public `FacebookAI/roberta-base` model
+to `.tmp/hf`. The important outputs are:
+
+~~~text
+outputs/voxmm_roberta_rescore/nbest/domain_beam500_nbest.jsonl
+outputs/voxmm_roberta_rescore/roberta_top50_scored.jsonl
+outputs/voxmm_roberta_rescore/fixed/best.jsonl
+outputs/voxmm_roberta_rescore/fixed/results.json
+~~~
+
+The checked-in defaults reproduce the best development setup found so far:
+
+~~~text
+First pass:  LM weight 1.15, word bonus 1.10, beam 500, N-best 100
+Second pass: top 50, RoBERTa weight 0.16, word bonus 1.30
+Filled pauses: removed from output, with drop penalty -1.0
+~~~
+
+Useful overrides include:
+
+~~~bash
+VOXMM_MLM_DEVICE=cuda \
+VOXMM_MLM_BATCH_SIZE=32 \
+VOXMM_FORCE=1 \
+OUTPUT_DIR="$PWD/outputs/voxmm_roberta_rescore_new" \
+  bash scripts/experimental/run_voxmm_roberta_rescore.sh
+~~~
+
+Set `VOXMM_TRAIN_MANIFEST`, `VOXMM_EVAL_MANIFEST`,
+`VOXMM_CALLBACK_PATH`, and `CHECKPOINT` to evaluate another data split or
+checkpoint. The first AVEC command consumes the callback/checkpoint options;
+the rescoring command consumes the resulting cache. Use a new cache directory
+whenever the checkpoint, evaluation manifest, manifest order, or evaluation
+batch size changes. Reusing a mismatched cache silently assigns emissions to
+the wrong references.
+
+If RoBERTa runs out of GPU memory, reduce `VOXMM_MLM_BATCH_SIZE` or set
+`VOXMM_MLM_DEVICE=cpu`. `VOXMM_FORCE=1` recomputes RoBERTa scores and final
+reranking, while the expensive AVEC forward pass remains cached.
 
 ## Reliability routing
 

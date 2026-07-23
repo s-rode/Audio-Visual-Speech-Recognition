@@ -3,8 +3,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 decoder_python="${VOXMM_DECODER_PYTHON:-$repo_root/external/AVEC/.venv/bin/python}"
-lm_python="${VOXMM_LM_PYTHON:-$repo_root/external/MMS-LLaMA/.venv/bin/python}"
-cache_dir="${VOXMM_EMISSION_CACHE:-$repo_root/outputs/voxmm_emission_cache/epoch12}"
+lm_python="${VOXMM_LM_PYTHON:-$decoder_python}"
+cache_dir="${VOXMM_EMISSION_CACHE_DIR:-${VOXMM_EMISSION_CACHE:-$repo_root/outputs/voxmm_emission_cache/epoch12}}"
 eval_manifest="${VOXMM_EVAL_MANIFEST:-$repo_root/data/voxmm_dev_eval/manifest.local.csv}"
 train_manifest="${VOXMM_TRAIN_MANIFEST:-$repo_root/data/voxmm_preprocessed/manifest.train_no_dev_ids.local.csv}"
 kenlm_path="${VOXMM_KENLM_PATH:-$repo_root/external/assets/lm/voxmm-3gram-d060/3-gram.arpa}"
@@ -26,7 +26,19 @@ for executable in "$decoder_python" "$lm_python"; do
   fi
 done
 
+if ! "$lm_python" -c "import torch, transformers" >/dev/null 2>&1; then
+  echo "The rescoring environment is missing torch or transformers: $lm_python" >&2
+  echo "Install the beam-search dependencies from the repository root:" >&2
+  echo "  uv pip install --python external/AVEC/.venv/bin/python flashlight-text==0.0.7 transformers==4.47.1 wandb" >&2
+  exit 1
+fi
+
 if [[ ! -f "$candidate_path" ]]; then
+  if ! "$decoder_python" -c "from torchaudio.models.decoder import ctc_decoder" >/dev/null 2>&1; then
+    echo "The AVEC environment cannot import torchaudio's Flashlight decoder: $decoder_python" >&2
+    echo "Install flashlight-text==0.0.7 into that exact environment." >&2
+    exit 1
+  fi
   for path in "$eval_manifest" "$train_manifest" "$kenlm_path" "$lexicon_unigrams"; do
     if [[ ! -f "$path" ]]; then
       echo "Missing required input: $path" >&2
@@ -35,6 +47,8 @@ if [[ ! -f "$candidate_path" ]]; then
   done
   if ! compgen -G "$cache_dir/batch_*.pt" >/dev/null; then
     echo "No cached emissions found under $cache_dir" >&2
+    echo "Create them from the repository root with:" >&2
+    echo "  VOXMM_EMISSION_CACHE_DIR=\"$cache_dir\" bash scripts/experimental/run_voxmm_best_beamsearch.sh" >&2
     exit 1
   fi
 
