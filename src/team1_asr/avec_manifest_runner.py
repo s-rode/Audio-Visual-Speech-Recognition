@@ -30,6 +30,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--modality", choices=sorted(_MODALITIES), required=True)
     parser.add_argument("--model-name", default="AVEC")
     parser.add_argument("--cpu", action="store_true")
+    parser.add_argument("--decoder", choices=["greedy", "prefix_beam", "prefix_beam_lm", "flashlight_lexicon_free", "flashlight_lm", "flashlight_kenlm", "ctcdecode"], default="greedy")
+    parser.add_argument("--beam-size", type=int, default=16)
+    parser.add_argument("--beam-cutoff-top-n", type=int, default=40)
+    parser.add_argument("--beam-temperature", type=float, default=1.0)
+    parser.add_argument("--beam-token-bonus", type=float, default=0.0)
+    parser.add_argument("--lm-manifest")
+    parser.add_argument("--lm-type")
+    parser.add_argument("--lm-weight", type=float)
+    parser.add_argument("--lm-order", type=int)
+    parser.add_argument("--lm-smoothing", type=float)
+    parser.add_argument("--lm-discount", type=float)
+    parser.add_argument("--word-bonus", type=float)
     parser.add_argument(
         "--mock-transcript",
         default=None,
@@ -56,6 +68,7 @@ def main() -> None:
             "backend": "avec",
             "model": args.model_name,
             "modality": args.modality,
+            "decoder": args.decoder,
         }
     )
     _serve(transcriber, sys.stdin)
@@ -132,10 +145,14 @@ class _AvecTranscriber(_BaseTranscriber):
                 f"AVEC repo not found at {self._repo_path}. Clone https://github.com/burchim/AVEC there first."
             )
         self._previous_cwd = Path.cwd()
+        project_root = Path(__file__).resolve().parents[2]
+        if str(project_root) not in sys.path:
+            sys.path.insert(0, str(project_root))
         sys.path.insert(0, str(self._repo_path))
         os.chdir(self._repo_path)
         try:
             with contextlib.redirect_stdout(sys.stderr):
+                _configure_decoder_environment(args)
                 self._torch = importlib.import_module("torch")
                 self._torchvision = importlib.import_module("torchvision")
                 self._functions = importlib.import_module("functions")
@@ -184,6 +201,7 @@ class _AvecTranscriber(_BaseTranscriber):
                 "runtime": "AVEC",
                 "modality": self._args.modality,
                 "utterance_id": utterance_id,
+                "decoder": self._args.decoder,
                 "video_preprocessing": video_preprocessing or "center_crop",
             },
         }
@@ -221,7 +239,7 @@ class _AvecTranscriber(_BaseTranscriber):
             model.compile(
                 losses=nnet.CTCLoss(zero_infinity=True, assert_shorter=False),
                 metrics=nnet.WordErrorRate(),
-                decoders=nnet.CTCGreedySearchDecoder(tokenizer_path=tokenizer_path),
+                decoders=_make_decoder(nnet, tokenizer_path),
                 loss_weights=None,
             )
             collate_fn = nnet.CollateFn(
@@ -241,7 +259,7 @@ class _AvecTranscriber(_BaseTranscriber):
             )
             model.compile(
                 losses=nnet.CTCLoss(zero_infinity=True, assert_shorter=False),
-                decoders={"outputs": nnet.CTCGreedySearchDecoder(tokenizer_path=tokenizer_path)},
+                decoders={"outputs": _make_decoder(nnet, tokenizer_path)},
                 metrics={"outputs": nnet.WordErrorRate()},
                 loss_weights=[0.5 / 3, 0.5 / 3, 0.5 / 3, 0.5],
             )
@@ -263,7 +281,7 @@ class _AvecTranscriber(_BaseTranscriber):
             )
             model.compile(
                 losses=nnet.CTCLoss(zero_infinity=True, assert_shorter=False),
-                decoders={"outputs": nnet.CTCGreedySearchDecoder(tokenizer_path=tokenizer_path)},
+                decoders={"outputs": _make_decoder(nnet, tokenizer_path)},
                 metrics={"outputs": nnet.WordErrorRate()},
                 loss_weights={
                     "v_ctc_2": 0.5 / 3,
@@ -338,6 +356,33 @@ def _first_decoded_text(decoded: object) -> str:
     if isinstance(decoded, list) and decoded:
         return str(decoded[0]).strip()
     return str(decoded or "").strip()
+
+
+def _configure_decoder_environment(args: argparse.Namespace) -> None:
+    """Pass manifest-inference options to the main-branch decoder factory."""
+    values = {
+        "VOXMM_DECODER": args.decoder,
+        "VOXMM_BEAM_SIZE": args.beam_size,
+        "VOXMM_BEAM_CUTOFF_TOP_N": args.beam_cutoff_top_n,
+        "VOXMM_BEAM_TEMPERATURE": args.beam_temperature,
+        "VOXMM_BEAM_TOKEN_BONUS": args.beam_token_bonus,
+        "VOXMM_LM_MANIFEST": args.lm_manifest,
+        "VOXMM_LM_TYPE": args.lm_type,
+        "VOXMM_LM_WEIGHT": args.lm_weight,
+        "VOXMM_LM_ORDER": args.lm_order,
+        "VOXMM_LM_SMOOTHING": args.lm_smoothing,
+        "VOXMM_LM_DISCOUNT": args.lm_discount,
+        "VOXMM_WORD_BONUS": args.word_bonus,
+    }
+    for name, value in values.items():
+        if value is not None:
+            os.environ[name] = str(value)
+
+
+def _make_decoder(nnet, tokenizer_path: str):
+    from configs.VoxMM.ctc_decoding import decoder_options_from_env, make_ctc_decoder
+
+    return make_ctc_decoder(nnet, tokenizer_path, decoder_options_from_env())
 
 
 def _video_preprocessing(torchvision, nnet):
