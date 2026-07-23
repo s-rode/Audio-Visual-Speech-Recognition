@@ -96,18 +96,24 @@ def preprocess_manifest(
         row["utterance_id"]: row for row in existing_reliability
     }
     fieldnames = _fieldnames(rows, [id_column, audio_column, video_column, reference_column, language_column, "video_preprocessing"])
+    # Use append mode when skip_existing to support parallel sharded runs
+    csv_mode = "a" if skip_existing else "w"
+    manifest_is_new = not output_manifest.exists() or not skip_existing
+    reliability_is_new = not reliability_path.exists() or not skip_existing
     with output_manifest.open(
-        "w", encoding="utf-8", newline=""
+        csv_mode, encoding="utf-8", newline=""
     ) as handle, reliability_path.open(
-        "w", encoding="utf-8", newline=""
+        csv_mode, encoding="utf-8", newline=""
     ) as reliability_handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         reliability_writer = csv.DictWriter(
             reliability_handle,
             fieldnames=RELIABILITY_FIELDNAMES,
         )
-        writer.writeheader()
-        reliability_writer.writeheader()
+        if manifest_is_new:
+            writer.writeheader()
+        if reliability_is_new:
+            reliability_writer.writeheader()
         total = len(rows)
         for index, row in enumerate(rows):
             utterance_id = row.get(id_column) or f"utt-{index:05d}"
