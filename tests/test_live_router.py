@@ -33,6 +33,29 @@ class _Backend:
         )
 
 
+class _StreamingBackend(_Backend):
+    def transcribe_with_events(self, request, emit):
+        emit(
+            {
+                "stage": "beam",
+                "status": "complete",
+                "message": "Generated hypotheses.",
+                "transcript": "beam result",
+            }
+        )
+        emit(
+            {
+                "stage": "rescore",
+                "status": "complete",
+                "message": "Selected a hypothesis.",
+                "transcript": self.text,
+            }
+        )
+        transcript = super().transcribe(request)
+        transcript.metadata["decoder"] = "flashlight_kenlm_roberta"
+        return transcript
+
+
 class LiveRouterTest(unittest.TestCase):
     def setUp(self) -> None:
         self.policy = {
@@ -95,6 +118,33 @@ class LiveRouterTest(unittest.TestCase):
 
         self.assertEqual(result.selected_system, "whisper")
         self.assertEqual(self.avec.calls, 0)
+
+    def test_forwards_online_decoder_progress(self) -> None:
+        events = []
+        router = LiveRouter(
+            self.policy,
+            self.whisper,
+            _StreamingBackend("avec", "reranked result"),
+            feature_extractor=lambda audio, video, transcript: dict(self.features),
+        )
+
+        result = router.route(
+            self.request,
+            {"roi_status": "success", "fallback_used": False},
+            feature_overrides={"audio_avg_logprob_mean": -1.3},
+            emit=events.append,
+        )
+
+        stages = [event["stage"] for event in events]
+        self.assertLess(stages.index("beam"), stages.index("rescore"))
+        self.assertLess(stages.index("rescore"), stages.index("result"))
+        self.assertEqual(result.transcript.text, "reranked result")
+        avec_complete = [
+            event
+            for event in events
+            if event["stage"] == "avec" and event["status"] == "complete"
+        ]
+        self.assertIn("RoBERTa", avec_complete[0]["message"])
 
 
 if __name__ == "__main__":

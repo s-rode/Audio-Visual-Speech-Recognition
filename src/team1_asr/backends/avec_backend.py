@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
-from typing import Any, TextIO
+from typing import Any, Callable, TextIO
 
 from team1_asr.backends.base import ASRBackend, TranscriptionRequest
 from team1_asr.config import BackendConfig
@@ -24,28 +25,56 @@ class AvecBackend(ASRBackend):
             raise RuntimeError(f"AVEC runner did not become ready: {ready}")
 
     def transcribe(self, request: TranscriptionRequest) -> Transcript:
+        return self.transcribe_with_events(request)
+
+    def transcribe_with_events(
+        self,
+        request: TranscriptionRequest,
+        emit: Callable[[dict[str, object]], None] | None = None,
+    ) -> Transcript:
         self._write_message(
             {
                 "type": "transcribe",
                 "audio_path": str(Path(request.audio_path).resolve()),
-                "video_path": str(Path(request.video_path).resolve()) if request.video_path else None,
+                "video_path": (
+                    str(Path(request.video_path).resolve())
+                    if request.video_path
+                    else None
+                ),
                 "language": request.language or self._config.language,
                 "utterance_id": request.utterance_id,
                 "reference": request.reference,
                 "video_preprocessing": request.video_preprocessing,
             }
         )
-        response = self._read_message()
-        if response.get("type") == "error":
-            raise RuntimeError(f"AVEC runner error: {response.get('message')}")
-        if response.get("type") != "transcript":
-            raise RuntimeError(f"Unexpected AVEC runner response: {response}")
+        while True:
+            response = self._read_message()
+            response_type = response.get("type")
+            if response_type == "progress":
+                event = response.get("event")
+                if emit is not None and isinstance(event, dict):
+                    emit({str(key): value for key, value in event.items()})
+                continue
+            if response_type == "error":
+                raise RuntimeError(f"AVEC runner error: {response.get('message')}")
+            if response_type != "transcript":
+                raise RuntimeError(f"Unexpected AVEC runner response: {response}")
+            return self._transcript_from_response(request, response)
 
+    def _transcript_from_response(
+        self,
+        request: TranscriptionRequest,
+        response: dict[str, Any],
+    ) -> Transcript:
         text = str(response.get("text", "")).strip()
         duration = _optional_float(response.get("duration"))
         return Transcript(
             text=text,
-            language=str(response.get("language") or request.language or self._config.language),
+            language=str(
+                response.get("language")
+                or request.language
+                or self._config.language
+            ),
             duration=duration,
             segments=[Segment(start=0.0, end=duration or 0.0, text=text)],
             metadata={
@@ -99,11 +128,18 @@ class AvecBackend(ASRBackend):
 
 
 def _start_bridge(config: BackendConfig) -> subprocess.Popen[str]:
+    project_root = Path(__file__).resolve().parents[3]
+    environment = os.environ.copy()
+    environment.setdefault("HF_HOME", str(project_root / ".tmp/hf"))
+    matplotlib_cache = project_root / ".tmp" / "matplotlib"
+    matplotlib_cache.mkdir(parents=True, exist_ok=True)
+    environment.setdefault("MPLCONFIGDIR", str(matplotlib_cache))
     return subprocess.Popen(
         _bridge_command(config),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=sys.stderr,
+        env=environment,
         text=True,
         bufsize=1,
     )

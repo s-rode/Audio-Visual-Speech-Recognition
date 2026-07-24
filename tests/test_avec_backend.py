@@ -16,8 +16,13 @@ class AvecBackendTest(unittest.TestCase):
             "\n".join(
                 [
                     '{"type":"ready","model":"avec-audio-visual"}',
+                    '{"type":"progress","event":{"stage":"beam","status":"complete",'
+                    '"transcript":"hello word"}}',
+                    '{"type":"progress","event":{"stage":"rescore","status":"complete",'
+                    '"transcript":"hello world","selected_rank":2}}',
                     '{"type":"transcript","text":"hello world","duration":1.25,'
-                    '"language":"en","metadata":{"runtime":"mock"}}',
+                    '"language":"en","metadata":{"runtime":"mock",'
+                    '"decoder":"flashlight_kenlm_roberta","selected_rank":2}}',
                 ]
             )
             + "\n"
@@ -26,13 +31,15 @@ class AvecBackendTest(unittest.TestCase):
 
         with patch("team1_asr.backends.avec_backend._start_bridge", return_value=process):
             backend = AvecBackend(config)
-            transcript = backend.transcribe(
+            events = []
+            transcript = backend.transcribe_with_events(
                 TranscriptionRequest(
                     audio_path="audio/utt.wav",
                     video_path="video/utt.mp4",
                     language="en",
                     utterance_id="utt",
-                )
+                ),
+                events.append,
             )
             backend.close()
 
@@ -40,6 +47,8 @@ class AvecBackendTest(unittest.TestCase):
         self.assertEqual(transcript.duration, 1.25)
         self.assertEqual(transcript.metadata["backend"], "avec")
         self.assertEqual(transcript.metadata["runtime"], "mock")
+        self.assertEqual(transcript.metadata["selected_rank"], 2)
+        self.assertEqual([event["stage"] for event in events], ["beam", "rescore"])
         self.assertIn('"type": "shutdown"', process.stdin.getvalue())
         self.assertIn('"utterance_id": "utt"', process.stdin.getvalue())
 

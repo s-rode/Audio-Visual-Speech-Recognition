@@ -135,15 +135,30 @@ class LiveRouter:
         if selects_av:
             sink(_event("avec", "running", "AVEC is fusing audio and mouth motion."))
             avec_started = perf_counter()
-            avec = self._avec.transcribe(request)
+            transcribe_with_events = getattr(
+                self._avec,
+                "transcribe_with_events",
+                None,
+            )
+            if callable(transcribe_with_events):
+                avec = transcribe_with_events(request, sink)
+            else:
+                avec = self._avec.transcribe(request)
             selected = avec
+            decoder = str(avec.metadata.get("decoder") or "greedy")
+            message = (
+                "AVEC fusion, beam search, and RoBERTa reranking are complete."
+                if decoder == "flashlight_kenlm_roberta"
+                else "AVEC transcript is ready."
+            )
             sink(
                 _event(
                     "avec",
                     "complete",
-                    "AVEC transcript is ready.",
+                    message,
                     elapsed_seconds=perf_counter() - avec_started,
                     transcript=avec.text,
+                    decoder=decoder,
                 )
             )
         else:
@@ -167,6 +182,12 @@ class LiveRouter:
         )
         sink(_event("result", "complete", "Routing complete.", result=result.as_dict()))
         return result
+
+    def preload(self) -> None:
+        for backend in (self._whisper, self._avec):
+            preload = getattr(backend, "preload", None)
+            if callable(preload):
+                preload()
 
     def close(self) -> None:
         for backend in (self._whisper, self._avec):

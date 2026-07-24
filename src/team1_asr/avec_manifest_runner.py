@@ -3,16 +3,27 @@ from __future__ import annotations
 import argparse
 import contextlib
 import importlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import sys
+import time
 from types import SimpleNamespace
-from typing import Any, TextIO
+from typing import Any, Callable, TextIO
 import wave
+
+from team1_asr.transformer_rescoring import (
+    RerankSettings,
+    RobertaPseudoLikelihoodRescorer,
+)
 
 
 _MODALITIES = {"audio", "visual", "audio_visual"}
+_DECODERS = {"greedy", "flashlight_kenlm", "flashlight_kenlm_roberta"}
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROTOCOL_OUTPUT = sys.stdout
+ProgressSink = Callable[[dict[str, object]], None]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -30,6 +41,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--modality", choices=sorted(_MODALITIES), required=True)
     parser.add_argument("--model-name", default="AVEC")
     parser.add_argument("--cpu", action="store_true")
+    parser.add_argument("--decoder", choices=sorted(_DECODERS), default="greedy")
+    parser.add_argument("--lm-manifest")
+    parser.add_argument("--kenlm-path")
+    parser.add_argument("--lexicon-unigrams")
+    parser.add_argument("--decoder-asset-dir", default=".tmp/avec_live_decoder")
+    parser.add_argument("--lm-order", type=int, default=3)
+    parser.add_argument("--lm-discount", type=float, default=0.60)
+    parser.add_argument("--lm-weight", type=float, default=1.15)
+    parser.add_argument("--word-bonus", type=float, default=1.10)
+    parser.add_argument("--beam-size", type=int, default=500)
+    parser.add_argument("--beam-token-cutoff", type=int, default=50)
+    parser.add_argument("--beam-threshold", type=float, default=50.0)
+    parser.add_argument("--nbest", type=int, default=100)
+    parser.add_argument("--max-words", type=int, default=200000)
+    parser.add_argument("--rerank-top-k", type=int, default=50)
+    parser.add_argument("--masked-lm", default="FacebookAI/roberta-base")
+    parser.add_argument("--masked-lm-device", default="auto")
+    parser.add_argument("--masked-lm-batch-size", type=int, default=32)
+    parser.add_argument("--masked-lm-cache-dir", default=".tmp/hf")
+    parser.add_argument("--transformer-weight", type=float, default=0.16)
+    parser.add_argument("--rescore-word-bonus", type=float, default=1.30)
+    parser.add_argument("--drop-penalty", type=float, default=-1.0)
+    parser.add_argument("--drop-filled-pauses", action="store_true")
+    parser.add_argument("--candidate-preview", type=int, default=5)
     parser.add_argument(
         "--mock-transcript",
         default=None,
@@ -79,6 +114,7 @@ def _serve(transcriber: "_BaseTranscriber", stream: TextIO) -> None:
                 language=message.get("language"),
                 utterance_id=message.get("utterance_id"),
                 video_preprocessing=message.get("video_preprocessing"),
+                emit=lambda event: _write({"type": "progress", "event": event}),
             )
             _write({"type": "transcript", **result})
         except Exception as exc:
@@ -93,6 +129,7 @@ class _BaseTranscriber:
         language: object,
         utterance_id: object,
         video_preprocessing: object = None,
+        emit: ProgressSink | None = None,
     ) -> dict[str, object]:
         raise NotImplementedError
 
@@ -108,6 +145,7 @@ class _MockTranscriber(_BaseTranscriber):
         language: object,
         utterance_id: object,
         video_preprocessing: object = None,
+        emit: ProgressSink | None = None,
     ) -> dict[str, object]:
         return {
             "text": self._args.mock_transcript,
@@ -127,9 +165,30 @@ class _AvecTranscriber(_BaseTranscriber):
     def __init__(self, args: argparse.Namespace) -> None:
         self._args = args
         self._repo_path = Path(args.repo_path).resolve()
+        self._lm_manifest: Path | None = None
+        self._kenlm_path: Path | None = None
+        self._lexicon_unigrams: Path | None = None
+        self._decoder_asset_dir: Path | None = None
+        self._masked_lm_cache_dir: Path | None = None
+        if args.decoder != "greedy":
+            self._lm_manifest = _required_project_file(
+                args.lm_manifest,
+                "--lm-manifest",
+            )
+            self._kenlm_path = _required_project_file(
+                args.kenlm_path,
+                "--kenlm-path",
+            )
+            self._lexicon_unigrams = _required_project_file(
+                args.lexicon_unigrams,
+                "--lexicon-unigrams",
+            )
+            self._decoder_asset_dir = _project_path(args.decoder_asset_dir)
+            self._masked_lm_cache_dir = _project_path(args.masked_lm_cache_dir)
         if not self._repo_path.exists():
             raise FileNotFoundError(
-                f"AVEC repo not found at {self._repo_path}. Clone https://github.com/burchim/AVEC there first."
+                f"AVEC repo not found at {self._repo_path}. "
+                "Clone https://github.com/burchim/AVEC there first."
             )
         self._previous_cwd = Path.cwd()
         sys.path.insert(0, str(self._repo_path))
@@ -141,6 +200,7 @@ class _AvecTranscriber(_BaseTranscriber):
                 self._functions = importlib.import_module("functions")
                 self._config = self._build_manifest_config()
                 self._model = self._functions.load_model(self._load_args())
+                self._decoder, self._rescorer = self._build_decoding_stack()
             self._model.eval()
         except Exception:
             os.chdir(self._previous_cwd)
@@ -153,6 +213,7 @@ class _AvecTranscriber(_BaseTranscriber):
         language: object,
         utterance_id: object,
         video_preprocessing: object = None,
+        emit: ProgressSink | None = None,
     ) -> dict[str, object]:
         audio_path_obj = Path(audio_path)
         if not audio_path_obj.exists():
@@ -160,10 +221,13 @@ class _AvecTranscriber(_BaseTranscriber):
         video_path_obj = Path(str(video_path)) if video_path else None
         if self._args.modality in {"visual", "audio_visual"}:
             if video_path_obj is None:
-                raise ValueError("AVEC visual/audio_visual modes require video_path in the manifest.")
+                raise ValueError(
+                    "AVEC visual/audio_visual modes require video_path in the manifest."
+                )
             if not video_path_obj.exists():
                 raise FileNotFoundError(f"Video path does not exist: {video_path_obj}")
 
+        sink = emit or (lambda event: None)
         sample, duration = self._build_sample(audio_path_obj, video_path_obj)
         batch = self._config.collate_fn([sample])
         inputs = self._model.transfer_to_device(batch["inputs"])
@@ -174,10 +238,10 @@ class _AvecTranscriber(_BaseTranscriber):
                 raise RuntimeError("AVEC model did not return an 'outputs' prediction.")
             if not getattr(self._model, "built", False):
                 self._model.build(outputs)
-            decoded = self._model.decoders["outputs"](outputs["outputs"])
+            text, decoder_metadata = self._decode(outputs["outputs"], sink)
 
         return {
-            "text": _first_decoded_text(decoded),
+            "text": text,
             "language": language,
             "duration": duration,
             "metadata": {
@@ -185,8 +249,153 @@ class _AvecTranscriber(_BaseTranscriber):
                 "modality": self._args.modality,
                 "utterance_id": utterance_id,
                 "video_preprocessing": video_preprocessing or "center_crop",
+                **decoder_metadata,
             },
         }
+
+    def _build_decoding_stack(self):
+        if self._args.decoder == "greedy":
+            return None, None
+        assert self._lm_manifest is not None
+        assert self._kenlm_path is not None
+        assert self._lexicon_unigrams is not None
+        assert self._decoder_asset_dir is not None
+        ctc_decoding = _load_ctc_decoding_module()
+        word_lm = ctc_decoding.KneserNeyWordNGramLM(
+            manifest_path=str(self._lm_manifest),
+            order=self._args.lm_order,
+            discount=self._args.lm_discount,
+        )
+        decoder = ctc_decoding.FlashlightCTCDecoder(
+            tokenizer_path=str(
+                self._repo_path / "datasets/LRS3/tokenizerbpe256.model"
+            ),
+            lm=word_lm,
+            beam_size=self._args.beam_size,
+            cutoff_top_n=self._args.beam_token_cutoff,
+            temperature=1.0,
+            blank_bias=0.0,
+            lm_weight=self._args.lm_weight,
+            word_bonus=self._args.word_bonus,
+            asset_dir=str(self._decoder_asset_dir),
+            kenlm_path=str(self._kenlm_path),
+            lexicon_unigram_path=str(self._lexicon_unigrams),
+            max_words=self._args.max_words,
+            beam_threshold=self._args.beam_threshold,
+            log_add=False,
+            nbest=self._args.nbest,
+        )
+        rescorer = None
+        if self._args.decoder == "flashlight_kenlm_roberta":
+            assert self._masked_lm_cache_dir is not None
+            rescorer = RobertaPseudoLikelihoodRescorer(
+                model_name=self._args.masked_lm,
+                device=self._args.masked_lm_device,
+                batch_size=self._args.masked_lm_batch_size,
+                cache_dir=self._masked_lm_cache_dir,
+            )
+        return decoder, rescorer
+
+    def _decode(
+        self,
+        outputs: object,
+        emit: ProgressSink,
+    ) -> tuple[str, dict[str, object]]:
+        if self._decoder is None:
+            decoded = self._model.decoders["outputs"](outputs)
+            return _first_decoded_text(decoded), {"decoder": "greedy"}
+        if not isinstance(outputs, (tuple, list)) or len(outputs) != 2:
+            raise RuntimeError("AVEC CTC outputs must contain logits and lengths.")
+
+        emit(
+            _progress(
+                "beam",
+                "running",
+                f"Decoding a {self._args.nbest}-best list with the VoxMM 3-gram LM.",
+            )
+        )
+        beam_started = time.perf_counter()
+        candidate_batches = self._decoder.decode_candidates(outputs[0], outputs[1])
+        if len(candidate_batches) != 1 or not candidate_batches[0]:
+            raise RuntimeError("Flashlight returned no hypotheses for the live sample.")
+        candidates = candidate_batches[0]
+        beam_seconds = time.perf_counter() - beam_started
+        first_pass_text = str(candidates[0].get("text") or "").strip()
+        emit(
+            _progress(
+                "beam",
+                "complete",
+                f"Generated {len(candidates)} CTC hypotheses.",
+                transcript=first_pass_text,
+                nbest_size=len(candidates),
+                elapsed_seconds=beam_seconds,
+            )
+        )
+
+        metadata: dict[str, object] = {
+            "decoder": self._args.decoder,
+            "first_pass_transcript": first_pass_text,
+            "nbest_size": len(candidates),
+            "beam_seconds": beam_seconds,
+            "lm_weight": self._args.lm_weight,
+            "first_pass_word_bonus": self._args.word_bonus,
+        }
+        if self._rescorer is None:
+            metadata["top_candidates"] = _candidate_preview(
+                candidates,
+                self._args.candidate_preview,
+            )
+            return first_pass_text, metadata
+
+        emit(
+            _progress(
+                "rescore",
+                "running",
+                f"Reranking the top {self._args.rerank_top_k} hypotheses with RoBERTa.",
+            )
+        )
+        rerank_started = time.perf_counter()
+        settings = RerankSettings(
+            top_k=self._args.rerank_top_k,
+            transformer_weight=self._args.transformer_weight,
+            word_bonus=self._args.rescore_word_bonus,
+            drop_penalty=self._args.drop_penalty,
+        )
+        dropped_words = None if self._args.drop_filled_pauses else ()
+        result = self._rescorer.rerank(
+            candidates,
+            settings,
+            **({} if dropped_words is None else {"dropped_words": dropped_words}),
+        )
+        rerank_seconds = time.perf_counter() - rerank_started
+        emit(
+            _progress(
+                "rescore",
+                "complete",
+                f"RoBERTa selected beam rank {result.selected_rank}.",
+                transcript=result.text,
+                first_pass_transcript=result.first_pass_text,
+                selected_rank=result.selected_rank,
+                elapsed_seconds=rerank_seconds,
+            )
+        )
+        metadata.update(
+            {
+                "reranker": self._args.masked_lm,
+                "rerank_top_k": self._args.rerank_top_k,
+                "rerank_seconds": rerank_seconds,
+                "transformer_weight": self._args.transformer_weight,
+                "second_pass_word_bonus": self._args.rescore_word_bonus,
+                "drop_penalty": self._args.drop_penalty,
+                "selected_rank": result.selected_rank,
+                "selected_score": result.selected_score,
+                "top_candidates": _candidate_preview(
+                    result.candidates,
+                    self._args.candidate_preview,
+                ),
+            }
+        )
+        return result.text, metadata
 
     def _load_args(self) -> SimpleNamespace:
         return SimpleNamespace(
@@ -296,7 +505,6 @@ class _AvecTranscriber(_BaseTranscriber):
             collate_fn=collate_fn,
         )
 
-
     def _build_sample(
         self,
         audio_path: Path,
@@ -332,6 +540,62 @@ class _AvecTranscriber(_BaseTranscriber):
         return (video, audio, label, video_len, audio_len, label_len), duration
 
 
+def _project_path(value: str | Path) -> Path:
+    path = Path(value).expanduser()
+    return path.resolve() if path.is_absolute() else (_PROJECT_ROOT / path).resolve()
+
+
+def _required_project_file(value: str | None, option: str) -> Path:
+    if not value:
+        raise ValueError(f"{option} is required for non-greedy AVEC decoding.")
+    path = _project_path(value)
+    if not path.is_file():
+        raise FileNotFoundError(f"{option} does not exist: {path}")
+    return path
+
+
+def _load_ctc_decoding_module():
+    module_name = "_team1_voxmm_ctc_decoding"
+    existing = sys.modules.get(module_name)
+    if existing is not None:
+        return existing
+    module_path = _PROJECT_ROOT / "configs/VoxMM/ctc_decoding.py"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load CTC decoder module from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _progress(
+    stage: str,
+    status: str,
+    message: str,
+    **values: object,
+) -> dict[str, object]:
+    return {"stage": stage, "status": status, "message": message, **values}
+
+
+def _candidate_preview(
+    candidates: list[dict[str, object]],
+    limit: int,
+) -> list[dict[str, object]]:
+    fields = (
+        "rank",
+        "text",
+        "normalized_text",
+        "score",
+        "transformer_lm_score",
+        "combined_score",
+    )
+    return [
+        {name: candidate[name] for name in fields if name in candidate}
+        for candidate in candidates[: max(0, limit)]
+    ]
+
+
 def _first_decoded_text(decoded: object) -> str:
     if isinstance(decoded, str):
         return decoded.strip()
@@ -343,7 +607,9 @@ def _first_decoded_text(decoded: object) -> str:
 def _video_preprocessing(torchvision, nnet):
     return torchvision.transforms.Compose(
         [
-            torchvision.transforms.ConvertImageDtype(dtype=importlib.import_module("torch").float32),
+            torchvision.transforms.ConvertImageDtype(
+                dtype=importlib.import_module("torch").float32
+            ),
             nnet.Permute(dims=(1, 0, 2, 3)),
             torchvision.transforms.Grayscale(),
             nnet.Permute(dims=(1, 0, 2, 3)),
@@ -394,7 +660,8 @@ def _load_video(path: Path, torch):
 
 
 def _write(message: dict[str, object]) -> None:
-    print(json.dumps(message), flush=True)
+    _PROTOCOL_OUTPUT.write(json.dumps(message) + "\n")
+    _PROTOCOL_OUTPUT.flush()
 
 
 if __name__ == "__main__":

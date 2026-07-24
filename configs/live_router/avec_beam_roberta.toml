@@ -1,0 +1,45 @@
+experiment_name = "live-router-avec-beam-roberta"
+
+[backend]
+kind = "avec"
+model = "avec-voxmm-av-beam-roberta"
+repo_path = "external/AVEC"
+config_file = "configs/LRS23/AV/EffConfInterCTC.py"
+callback_path = "callbacks/VoxMM/AV/EffConfInterCTC_finetune_dev_eval"
+checkpoint = "checkpoints_epoch_12_step_7201.ckpt"
+modality = "audio_visual"
+language = "en"
+python_executable = "external/AVEC/.venv/bin/python"
+skip_transcription_errors = false
+extra_args = [
+  "--decoder", "flashlight_kenlm_roberta",
+  "--lm-manifest", "data/voxmm_preprocessed/manifest.train_no_dev_ids.local.csv",
+  "--kenlm-path", "external/assets/lm/voxmm-3gram-d060/3-gram.arpa",
+  "--lexicon-unigrams", "external/assets/lm/librispeech-4gram/unigrams.txt",
+  "--decoder-asset-dir", ".tmp/avec_live_decoder",
+  "--lm-order", "3",
+  "--lm-discount", "0.60",
+  "--lm-weight", "1.15",
+  "--word-bonus", "1.10",
+  "--beam-size", "500",
+  "--beam-token-cutoff", "50",
+  "--beam-threshold", "50",
+  "--nbest", "100",
+  "--max-words", "200000",
+  "--rerank-top-k", "50",
+  "--masked-lm", "FacebookAI/roberta-base",
+  "--masked-lm-device", "auto",
+  "--masked-lm-batch-size", "32",
+  "--masked-lm-cache-dir", ".tmp/hf/hub",
+  "--transformer-weight", "0.16",
+  "--rescore-word-bonus", "1.30",
+  "--drop-penalty", "-1.0",
+  "--drop-filled-pauses",
+  "--candidate-preview", "5",
+]
+
+[noise]
+enabled = false
+
+[wandb]
+enabled = false
