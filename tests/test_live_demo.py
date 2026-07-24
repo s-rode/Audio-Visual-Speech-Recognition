@@ -12,7 +12,11 @@ from team1_asr.backends.base import TranscriptionRequest
 from team1_asr.live_capture import CaptureArtifacts
 from team1_asr.live_demo import (
     _LiveInputBackend,
+    _apply_real_defaults,
+    _force_avec_policy,
+    _manifest_mouth_roi_reliability,
     build_mock_application,
+    build_parser,
     create_server,
 )
 from team1_asr.types import Transcript
@@ -160,6 +164,34 @@ class LiveDemoServerTest(unittest.TestCase):
         self.assertIn("avec-live-transcript", page)
         self.assertIn("whisper-segments", page)
         self.assertIn("avec-segments", page)
+        self.assertIn("decoder-detail", page)
+        self.assertIn("beam-live-transcript", page)
+
+    def test_real_flag_populates_repository_defaults(self) -> None:
+        args = build_parser().parse_args(["--real", "--force-avec"])
+
+        _apply_real_defaults(args)
+
+        self.assertTrue(args.manifest.endswith("manifest.local.csv"))
+        self.assertTrue(args.policy.endswith("voxmm_policy_dev.json"))
+        self.assertTrue(args.avec_config.endswith("avec_beam_roberta.toml"))
+
+    def test_mouth_roi_manifest_is_accepted_without_reliability_csv(self) -> None:
+        reliability = _manifest_mouth_roi_reliability(
+            {"video_path": "video/example_mouth.mp4"}
+        )
+
+        self.assertEqual(reliability["roi_status"], "success")
+        self.assertFalse(reliability["fallback_used"])
+
+    def test_force_avec_policy_preserves_system_names(self) -> None:
+        policy = _force_avec_policy(
+            {"audio_system": "audio", "av_system": "audio_visual"}
+        )
+
+        self.assertEqual(policy["policy_type"], "roi_success")
+        self.assertEqual(policy["audio_system"], "audio")
+        self.assertEqual(policy["av_system"], "audio_visual")
 
     def test_static_media_supports_byte_ranges(self) -> None:
         request = Request(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import subprocess
 from typing import Callable
@@ -38,7 +39,7 @@ class BrowserCapturePreparer:
         self.real_preprocessing = real_preprocessing
         self.repo_path = Path(repo_path).resolve() if repo_path else None
         self.python_executable = (
-            str(Path(python_executable).resolve())
+            str(Path(python_executable).absolute())
             if python_executable and "/" in python_executable
             else python_executable
         )
@@ -156,11 +157,18 @@ class BrowserCapturePreparer:
             str(self.repo_path),
             "--force",
         ]
+        project_root = Path(__file__).resolve().parents[2]
+        environment = os.environ.copy()
+        environment.setdefault("HF_HOME", str(project_root / ".tmp/hf"))
+        matplotlib_cache = project_root / ".tmp" / "matplotlib"
+        matplotlib_cache.mkdir(parents=True, exist_ok=True)
+        environment.setdefault("MPLCONFIGDIR", str(matplotlib_cache))
         completed = subprocess.run(
             command,
             capture_output=True,
             text=True,
             cwd=Path.cwd(),
+            env=environment,
         )
         if completed.returncode != 0:
             detail = completed.stderr.strip() or completed.stdout.strip()

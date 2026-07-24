@@ -17,6 +17,20 @@ class LiveCaptureTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unsupported capture media type"):
             capture_suffix("audio/webm")
 
+    def test_real_preparer_preserves_virtualenv_symlink(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            executable = Path(temp_dir) / ".venv" / "bin" / "python"
+            executable.parent.mkdir(parents=True)
+            executable.symlink_to(Path("/usr/bin/python3"))
+
+            preparer = BrowserCapturePreparer(
+                real_preprocessing=True,
+                repo_path=".",
+                python_executable=str(executable),
+            )
+
+            self.assertEqual(preparer.python_executable, str(executable.absolute()))
+
     def test_mock_preparer_emits_capture_and_preprocess_events(self) -> None:
         events: list[dict[str, object]] = []
         with TemporaryDirectory() as temp_dir:

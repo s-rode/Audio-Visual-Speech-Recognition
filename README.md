@@ -135,10 +135,9 @@ Fine-tuning still happens inside the AVEC checkout.
 ~~~bash
 git clone https://github.com/burchim/AVEC external/AVEC
 cd external/AVEC
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -r requirements.txt
-python3 download_checkpoints_and_tokenizers.py
+uv venv --python 3.11 .venv
+uv pip install --python .venv/bin/python -r requirements.txt
+.venv/bin/python download_checkpoints_and_tokenizers.py
 ~~~
 
 Mouth preprocessing uses AVEC's LipDetectCrop together with ibug face detection
@@ -148,8 +147,8 @@ and alignment:
 mkdir -p external_deps
 git clone https://github.com/hhj1897/face_detection.git external_deps/face_detection
 git clone https://github.com/hhj1897/face_alignment.git external_deps/face_alignment
-python3 -m pip install -e external_deps/face_detection
-python3 -m pip install -e external_deps/face_alignment
+uv pip install --python .venv/bin/python --editable external_deps/face_detection
+uv pip install --python .venv/bin/python --editable external_deps/face_alignment
 ~~~
 
 The face-detection repository uses Git LFS for RetinaFace weights. When that
@@ -241,44 +240,72 @@ external/AVEC/callbacks/VoxMM/AO/EffConfCTC_finetune_dev_eval/checkpoints_epoch_
 
 ## Live router demo
 
-The browser demo streams the sequential decision as it happens: Whisper
-transcribes first, the frozen policy scores pre-AVEC features, and AVEC runs only
-for requests selected by the router. The deterministic Samples tab remains self-contained.
-Camera and microphone captures use real faster-whisper `base.en` transcription by default; the model
-is loaded lazily on the first recording:
+The browser demo streams the deployed sequence as it happens: Whisper runs
+first, the frozen reliability policy chooses a route, and selected requests run
+through AVEC audio-visual fusion, a 100-best Flashlight beam, and top-50
+RoBERTa reranking. The UI shows the Whisper transcript, first-pass 3-gram
+hypothesis, reranked result, routing features, and selected output.
+
+### Presentation-only mode
+
+The default command keeps deterministic sample routing and uses real
+faster-whisper for camera audio. Use the second command for a fully mocked
+camera transcript:
 
 ~~~bash
 uv run team1-router-demo
-
-# Optional: retain the old fully mocked camera transcript behavior.
 uv run team1-router-demo --mock-live-transcripts
 ~~~
 
-Open http://127.0.0.1:7860, allow camera and microphone access, and record a
-five-second synchronized window. The server extracts 16 kHz mono audio, checks
-the video stream, runs Whisper, and shows whether the frozen router keeps the
-Whisper result or invokes AVEC. The inspector exposes the captured clip, the exact
-video passed to AVEC, extracted-audio playback and waveform, plus routing feature
-telemetry. Whisper and AVEC transcripts update independently with timestamped
-segments and the selected result is highlighted. The Samples tab retains the
-clear-room and street-noise controls for deterministic presentations.
+### Full real pipeline
 
-In real mode, live browser captures also pass through the AVEC mouth-ROI
-preprocessor. That requires the AVEC repository, its configured Python
-environment, and face-detection dependencies to be available.
-
-Real mode reads samples from an AVEC mouth-ROI manifest and its preprocessing
-reliability CSV. It lazily loads both backends and serves only media paths listed
-in that manifest:
+Real mode has checked repository defaults for the local 500-clip VoxMM
+development manifest, fine-tuned AVEC epoch-12 checkpoint, calibrated router,
+VoxMM 3-gram, expanded lexicon, and RoBERTa weights. Audit all paths and
+imports without loading model weights:
 
 ~~~bash
-uv run team1-router-demo \
-  --manifest data/lrs_voxmm/dev_avec_roi_600_balanced/manifest.csv \
-  --reliability data/lrs_voxmm/dev_avec_roi_600_balanced/visual_reliability.csv \
-  --policy outputs/lrs_voxmm_noise_600_enriched/router_study/best_policy.json \
-  --whisper-config configs/lrs_voxmm_whisper_base_600_enriched.toml \
-  --avec-config configs/lrs_voxmm_avec_av_finetuned_600_balanced.toml
+uv run team1-router-demo --real --check-only
 ~~~
+
+Run the learned routing policy and preload every backend before the browser
+opens:
+
+~~~bash
+uv run team1-router-demo --real --preload
+~~~
+
+For a presentation where the complete AVEC decoding path must always be shown,
+force every valid mouth ROI through AVEC:
+
+~~~bash
+uv run team1-router-demo --real --preload --force-avec --limit 12
+~~~
+
+Open http://127.0.0.1:7860. Wait for **Backends ready.** before presenting when
+using --preload. The first setup may populate .tmp/hf with faster-whisper
+base.en and FacebookAI/roberta-base; later runs reuse those files. AVEC, the
+3-gram LM, and RoBERTa stay resident, so only the first startup pays their load
+cost.
+
+The Samples tab serves the real audio and mouth-ROI clips from
+data/voxmm_dev_eval/manifest.local.csv. File names ending in _mouth.mp4 are
+recognized as preprocessed ROIs, so this manifest does not require a separate
+reliability CSV. The default policy is tracked at
+configs/live_router/voxmm_policy_dev.json; it was calibrated on the same 500
+development clips and is a demo policy, not a held-out routing result.
+
+The Capture tab records a synchronized browser camera/microphone window,
+extracts 16 kHz audio, runs the AVEC LipDetectCrop face and landmark stack, and
+passes the generated mouth ROI into the same router and decoder. This path
+requires the two ibug editable installs and Git LFS weights from the AVEC setup
+section. The generated source clip, WAV, ROI, reliability metrics, and
+transcripts remain inspectable in the browser for the current session.
+
+Use --manifest, --reliability, --policy, --whisper-config, and --avec-config to
+override individual real-mode defaults. --limit controls how many manifest
+examples appear in the sample picker, while --host and --port control the local
+server.
 
 ## Beam search and RoBERTa rescoring
 

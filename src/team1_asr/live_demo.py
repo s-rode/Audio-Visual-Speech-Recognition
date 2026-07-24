@@ -6,7 +6,9 @@ from dataclasses import dataclass
 import json
 import math
 import mimetypes
+import os
 import shutil
+import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import threading
@@ -28,7 +30,16 @@ from team1_asr.router_features import extract_live_features
 from team1_asr.types import Segment, Transcript
 
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+os.environ.setdefault("HF_HOME", str(_PROJECT_ROOT / ".tmp/hf"))
+mimetypes.knownfiles.clear()
+mimetypes.init()
+
 _ASSET_DIR = Path(__file__).with_name("live_demo_assets")
+_DEFAULT_REAL_MANIFEST = "data/voxmm_dev_eval/manifest.local.csv"
+_DEFAULT_REAL_POLICY = "configs/live_router/voxmm_policy_dev.json"
+_DEFAULT_REAL_WHISPER_CONFIG = "configs/lrs_voxmm_whisper_base_600_enriched.toml"
+_DEFAULT_REAL_AVEC_CONFIG = "configs/live_router/avec_beam_roberta.toml"
 _MAX_CAPTURE_BYTES = 32 * 1024 * 1024
 _OVERRIDE_RANGES = {
     "audio_avg_logprob_mean": (-2.0, 0.0),
@@ -88,7 +99,12 @@ class DemoApplication:
         self.mode = mode
         self.live_transcription = live_transcription
         self.lock = threading.Lock()
-        self.capture_directory = TemporaryDirectory(prefix="team1-live-media-")
+        capture_root = _PROJECT_ROOT / ".tmp" / "live_demo"
+        capture_root.mkdir(parents=True, exist_ok=True)
+        self.capture_directory = TemporaryDirectory(
+            prefix="team1-live-media-",
+            dir=capture_root,
+        )
         self.capture_media: dict[str, dict[str, Path]] = {}
         self.capture_order: list[str] = []
 
@@ -222,6 +238,9 @@ class DemoApplication:
             if source is not None:
                 shutil.rmtree(source.parent, ignore_errors=True)
 
+    def preload(self) -> None:
+        self.router.preload()
+
     def close(self) -> None:
         self.router.close()
         self.capture_directory.cleanup()
@@ -241,11 +260,25 @@ class _LazyBackend:
         self._backend: ASRBackend | None = None
         self._lock = threading.Lock()
 
-    def transcribe(self, request: TranscriptionRequest) -> Transcript:
+    def preload(self) -> ASRBackend:
         with self._lock:
             if self._backend is None:
                 self._backend = self._factory()
-        return self._backend.transcribe(request)
+            return self._backend
+
+    def transcribe(self, request: TranscriptionRequest) -> Transcript:
+        return self.preload().transcribe(request)
+
+    def transcribe_with_events(
+        self,
+        request: TranscriptionRequest,
+        emit: Callable[[dict[str, object]], None],
+    ) -> Transcript:
+        backend = self.preload()
+        method = getattr(backend, "transcribe_with_events", None)
+        if callable(method):
+            return method(request, emit)
+        return backend.transcribe(request)
 
     def close(self) -> None:
         close = getattr(self._backend, "close", None)
@@ -344,8 +377,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Serve a live Whisper-to-AVEC reliability-routing demo."
     )
+    parser.add_argument(
+        "--real",
+        action="store_true",
+        help="Run the complete Whisper/router/AVEC/beam/RoBERTa pipeline.",
+    )
     parser.add_argument("--manifest")
-    parser.add_argument("--reliability")
+    parser.add_argument(
+        "--reliability",
+        help=(
+            "Optional visual-reliability CSV. Mouth-ROI manifests with "
+            "*_mouth.mp4 paths are recognized automatically."
+        ),
+    )
     parser.add_argument("--policy")
     parser.add_argument("--whisper-config")
     parser.add_argument("--avec-config")
@@ -356,6 +400,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--live-whisper-device", default="cpu")
     parser.add_argument("--live-whisper-compute-type", default="int8")
     parser.add_argument(
+        "--preload",
+        action="store_true",
+        help="Load all selected models before starting the HTTP server.",
+    )
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Validate real-mode assets and imports, then exit.",
+    )
+    parser.add_argument(
+        "--force-avec",
+        action="store_true",
+        help="Route every valid mouth ROI through AVEC (showcase/debug mode).",
+    )
+    parser.add_argument(
         "--mock-live-transcripts",
         action="store_true",
         help="Keep hard-coded presentation transcripts for camera captures.",
@@ -365,36 +424,54 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    _apply_real_defaults(args)
     real_args = (
         args.manifest,
-        args.reliability,
         args.policy,
         args.whisper_config,
         args.avec_config,
     )
     if any(real_args) and not all(real_args):
         raise SystemExit(
-            "Real mode requires --manifest, --reliability, --policy, "
-            "--whisper-config, and --avec-config."
+            "Real mode requires --manifest, --policy, --whisper-config, "
+            "and --avec-config. Use --real for the repository defaults."
         )
+    real_mode = all(real_args)
+    if args.reliability and not real_mode:
+        raise SystemExit("--reliability is only valid in real mode.")
+    if args.force_avec and not real_mode:
+        raise SystemExit("--force-avec is only valid in real mode.")
+    if args.check_only:
+        if not real_mode:
+            raise SystemExit("--check-only requires real mode.")
+        _preflight_real(args)
+        print("Real AVEC live-demo preflight passed.", flush=True)
+        return
+
     application = (
         _build_real_application(args)
-        if all(real_args)
+        if real_mode
         else build_mock_application(
             live_whisper_backend=(
                 None if args.mock_live_transcripts else _build_live_whisper(args)
             )
         )
     )
-    server = create_server(application, args.host, args.port)
-    address, port = server.server_address[:2]
-    print(f"Live router demo: http://{address}:{port}", flush=True)
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
+        if args.preload:
+            print("Preloading live-demo backends...", flush=True)
+            application.preload()
+            print("Backends ready.", flush=True)
+        server = create_server(application, args.host, args.port)
+        address, port = server.server_address[:2]
+        print(f"Live router demo: http://{address}:{port}", flush=True)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.server_close()
     finally:
-        server.server_close()
         application.close()
 
 
@@ -538,19 +615,26 @@ def build_mock_application(
 
 
 def _build_real_application(args: argparse.Namespace) -> DemoApplication:
-    manifest_path = Path(args.manifest)
-    reliability_path = Path(args.reliability)
-    reliability = _read_csv_by_id(reliability_path)
+    _preflight_real(args)
+    manifest_path = _project_path(args.manifest)
+    reliability = (
+        _read_csv_by_id(_project_path(args.reliability))
+        if args.reliability
+        else {}
+    )
     samples = []
     for row in _read_csv(manifest_path)[: max(1, args.limit)]:
         utterance_id = str(row.get("utterance_id") or "")
         if not utterance_id:
             continue
+        sample_reliability = reliability.get(utterance_id)
+        if sample_reliability is None:
+            sample_reliability = _manifest_mouth_roi_reliability(row)
         samples.append(
             DemoSample(
                 utterance_id=utterance_id,
                 label=utterance_id,
-                condition=str(row.get("condition") or "Live sample"),
+                condition=str(row.get("condition") or "VoxMM development sample"),
                 audio_path=str(_resolve_path(manifest_path, row.get("audio_path"))),
                 video_path=(
                     str(_resolve_path(manifest_path, row.get("video_path")))
@@ -559,17 +643,16 @@ def _build_real_application(args: argparse.Namespace) -> DemoApplication:
                 ),
                 language=str(row.get("language") or "en"),
                 reference=str(row.get("reference") or "") or None,
-                reliability=reliability.get(utterance_id, {}),
+                reliability=dict(sample_reliability),
             )
         )
-    whisper_config = load_config(args.whisper_config).backend
-    avec_config = load_config(args.avec_config).backend
-    if whisper_config.kind != "faster-whisper":
-        raise ValueError("--whisper-config must use the faster-whisper backend.")
-    if avec_config.kind != "avec":
-        raise ValueError("--avec-config must use the avec backend.")
+    whisper_config = load_config(_project_path(args.whisper_config)).backend
+    avec_config = load_config(_project_path(args.avec_config)).backend
+    policy = load_policy(_project_path(args.policy))
+    if args.force_avec:
+        policy = _force_avec_policy(policy)
     router = LiveRouter(
-        load_policy(args.policy),
+        policy,
         _LazyBackend(lambda: create_backend(whisper_config)),
         _LazyBackend(lambda: create_backend(avec_config)),
     )
@@ -585,6 +668,158 @@ def _build_real_application(args: argparse.Namespace) -> DemoApplication:
         mode="real",
         live_transcription="faster-whisper",
     )
+
+
+def _apply_real_defaults(args: argparse.Namespace) -> None:
+    if not (args.real or args.check_only):
+        return
+    defaults = {
+        "manifest": _DEFAULT_REAL_MANIFEST,
+        "policy": _DEFAULT_REAL_POLICY,
+        "whisper_config": _DEFAULT_REAL_WHISPER_CONFIG,
+        "avec_config": _DEFAULT_REAL_AVEC_CONFIG,
+    }
+    for name, value in defaults.items():
+        if getattr(args, name) is None:
+            setattr(args, name, value)
+
+
+def _preflight_real(args: argparse.Namespace) -> None:
+    manifest_path = _require_file(args.manifest, "VoxMM manifest")
+    policy_path = _require_file(args.policy, "router policy")
+    whisper_path = _require_file(args.whisper_config, "Whisper config")
+    avec_path = _require_file(args.avec_config, "AVEC config")
+    if args.reliability:
+        _require_file(args.reliability, "visual reliability CSV")
+
+    rows = _read_csv(manifest_path)
+    if not rows:
+        raise ValueError(f"Real-mode manifest is empty: {manifest_path}")
+    for row in rows[: max(1, args.limit)]:
+        utterance_id = str(row.get("utterance_id") or "<missing id>")
+        for column in ("audio_path", "video_path"):
+            media_path = _resolve_path(manifest_path, row.get(column))
+            if not media_path.is_file():
+                raise FileNotFoundError(
+                    f"{column} for {utterance_id} does not exist: {media_path}"
+                )
+
+    load_policy(policy_path)
+    whisper_config = load_config(whisper_path).backend
+    avec_config = load_config(avec_path).backend
+    if whisper_config.kind != "faster-whisper":
+        raise ValueError("--whisper-config must use the faster-whisper backend.")
+    if avec_config.kind != "avec":
+        raise ValueError("--avec-config must use the avec backend.")
+
+    repo_path = _project_path(avec_config.repo_path)
+    if not repo_path.is_dir():
+        raise FileNotFoundError(f"AVEC repository does not exist: {repo_path}")
+    python_path = _require_file(avec_config.python_executable, "AVEC Python")
+    config_path = _path_under(repo_path, avec_config.config_file)
+    if not config_path.is_file():
+        raise FileNotFoundError(f"AVEC model config does not exist: {config_path}")
+    callback_value = avec_config.callback_path
+    if callback_value is None:
+        callback_value = str(Path(avec_config.config_file).with_suffix("")).replace(
+            "configs",
+            "callbacks",
+            1,
+        )
+    callback_path = _path_under(repo_path, callback_value)
+    checkpoint_path = _path_under(callback_path, avec_config.checkpoint)
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"AVEC checkpoint does not exist: {checkpoint_path}")
+
+    for option in ("--lm-manifest", "--kenlm-path", "--lexicon-unigrams"):
+        value = _extra_arg_value(avec_config.extra_args, option)
+        if value is not None:
+            _require_file(value, option)
+
+    imports = [
+        "import av, sentencepiece, torch, torchaudio, torchvision",
+        "from torchaudio.models.decoder import ctc_decoder",
+        "from ibug.face_detection import RetinaFacePredictor",
+        "from ibug.face_alignment import FANPredictor",
+    ]
+    if "flashlight_kenlm_roberta" in avec_config.extra_args:
+        imports.append("import transformers")
+    environment = os.environ.copy()
+    environment.setdefault("HF_HOME", str(_PROJECT_ROOT / ".tmp/hf"))
+    matplotlib_cache = _PROJECT_ROOT / ".tmp" / "matplotlib"
+    matplotlib_cache.mkdir(parents=True, exist_ok=True)
+    environment.setdefault("MPLCONFIGDIR", str(matplotlib_cache))
+    completed = subprocess.run(
+        [str(python_path), "-c", "; ".join(imports)],
+        cwd=_PROJECT_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        details = (completed.stderr or completed.stdout).strip()
+        raise RuntimeError(
+            "AVEC environment dependency check failed. Run the decoder setup "
+            f"from README.md. Original error:\n{details}"
+        )
+
+
+def _project_path(value: str | Path) -> Path:
+    path = Path(value).expanduser()
+    return path.absolute() if path.is_absolute() else (_PROJECT_ROOT / path).absolute()
+
+
+def _require_file(value: str | Path, label: str) -> Path:
+    path = _project_path(value)
+    if not path.is_file():
+        raise FileNotFoundError(f"{label} does not exist: {path}")
+    return path
+
+
+def _path_under(parent: Path, value: str | Path) -> Path:
+    path = Path(value).expanduser()
+    return path.resolve() if path.is_absolute() else (parent / path).resolve()
+
+
+def _extra_arg_value(values: list[str], option: str) -> str | None:
+    try:
+        index = values.index(option)
+    except ValueError:
+        return None
+    if index + 1 >= len(values):
+        raise ValueError(f"{option} requires a value in the AVEC config.")
+    return values[index + 1]
+
+
+def _manifest_mouth_roi_reliability(
+    row: dict[str, str],
+) -> dict[str, object]:
+    preprocessing = str(row.get("video_preprocessing") or "").lower()
+    video_name = Path(str(row.get("video_path") or "")).stem.lower()
+    is_mouth_roi = (
+        preprocessing in {"preprocessed", "mouth_roi", "mouth-roi"}
+        or video_name.endswith("_mouth")
+    )
+    if not is_mouth_roi:
+        return {}
+    return {
+        "roi_status": "success",
+        "fallback_used": False,
+        "reliability_source": "mouth_roi_manifest",
+    }
+
+
+def _force_avec_policy(policy: dict[str, object]) -> dict[str, object]:
+    return {
+        "version": 1,
+        "policy_type": "roi_success",
+        "feature_family": "visual",
+        "feature": None,
+        "direction": "higher",
+        "threshold": None,
+        "audio_system": policy.get("audio_system") or "whisper_base",
+        "av_system": policy.get("av_system") or "avec_av_beam_roberta",
+    }
 
 
 class _DemoHandler(BaseHTTPRequestHandler):

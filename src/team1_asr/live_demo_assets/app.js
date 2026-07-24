@@ -51,6 +51,9 @@ const ui = {
   avecTranscriptStatus: document.querySelector("#avec-transcript-status"),
   avecLiveTranscript: document.querySelector("#avec-live-transcript"),
   avecSegments: document.querySelector("#avec-segments"),
+  decoderDetail: document.querySelector("#decoder-detail"),
+  beamLiveTranscript: document.querySelector("#beam-live-transcript"),
+  rerankSummary: document.querySelector("#rerank-summary"),
   elapsed: document.querySelector("#elapsed"),
   trace: document.querySelector("#trace-list"),
   score: document.querySelector("#score-value"),
@@ -73,6 +76,8 @@ const stageLabels = {
   features: "Features",
   router: "Router",
   avec: "AVEC",
+  beam: "Beam search",
+  rescore: "RoBERTa",
   result: "Result",
   error: "Error",
 };
@@ -106,7 +111,9 @@ async function loadState() {
       ? "Real backends online"
       : liveWhisper ? "Live Whisper + demo AVEC" : "Presentation runtime";
     ui.modeChip.textContent = realMode ? "Real" : liveWhisper ? "Hybrid" : "Demo";
-    ui.avecTranscriptName.textContent = realMode ? "AVEC" : "AVEC (demo)";
+    ui.avecTranscriptName.textContent = realMode
+      ? "AVEC + beam + RoBERTa"
+      : "AVEC (demo)";
     ui.policyLabel.textContent = `${state.policy.type} policy · ${state.policy.audio_system} / ${state.policy.av_system}`;
     const threshold = Number(state.policy.threshold);
     ui.threshold.textContent = Number.isFinite(threshold)
@@ -659,10 +666,47 @@ function transcriptUi(system) {
 }
 
 function updateTranscriptEvent(event) {
-  if (event.stage !== "whisper" && event.stage !== "avec") return;
-  const target = transcriptUi(event.stage);
+  const decoderEvent = event.stage === "beam" || event.stage === "rescore";
+  if (
+    event.stage !== "whisper"
+    && event.stage !== "avec"
+    && !decoderEvent
+  ) return;
+  const system = decoderEvent ? "avec" : event.stage;
+  const target = transcriptUi(system);
   target.card.classList.remove("running", "complete", "skipped");
   target.card.classList.add(event.status);
+
+  if (event.stage === "beam") {
+    ui.decoderDetail.hidden = false;
+    target.status.textContent = event.status === "complete"
+      ? "Beam complete"
+      : "Beam search";
+    if (event.transcript) {
+      target.text.textContent = event.transcript;
+      ui.beamLiveTranscript.textContent = event.transcript;
+    }
+    if (event.status === "complete") {
+      ui.rerankSummary.textContent =
+        String(event.nbest_size || 0) + " hypotheses ready";
+    }
+    return;
+  }
+  if (event.stage === "rescore") {
+    ui.decoderDetail.hidden = false;
+    target.status.textContent = event.status === "complete"
+      ? "Reranked"
+      : "RoBERTa reranking";
+    if (event.status === "running") {
+      ui.rerankSummary.textContent = "Scoring language plausibility...";
+    } else if (event.status === "complete") {
+      target.text.textContent = event.transcript || "No speech detected.";
+      ui.rerankSummary.textContent =
+        "Selected beam rank " + String(event.selected_rank || 1);
+    }
+    return;
+  }
+
   if (event.status === "running") {
     target.status.textContent = "Transcribing";
     target.text.textContent = event.stage === "whisper"
@@ -685,6 +729,31 @@ function renderTranscriptResult(system, transcript) {
   target.card.classList.remove("running", "skipped");
   target.card.classList.add("complete");
   target.segments.replaceChildren();
+  if (system === "avec") {
+    const metadata = transcript.metadata || {};
+    const decodedWithBeam = String(metadata.decoder || "").startsWith(
+      "flashlight_kenlm"
+    );
+    ui.decoderDetail.hidden = !decodedWithBeam;
+    if (decodedWithBeam) {
+      ui.beamLiveTranscript.textContent =
+        metadata.first_pass_transcript || transcript.text || "No speech detected.";
+      const rank = Number(metadata.selected_rank);
+      const beamTime = Number(metadata.beam_seconds);
+      const rerankTime = Number(metadata.rerank_seconds);
+      const details = [];
+      if (Number.isFinite(rank)) details.push("beam rank " + rank);
+      if (Number.isFinite(beamTime)) {
+        details.push("beam " + beamTime.toFixed(2) + " s");
+      }
+      if (Number.isFinite(rerankTime)) {
+        details.push("rerank " + rerankTime.toFixed(2) + " s");
+      }
+      ui.rerankSummary.textContent = details.length
+        ? details.join(" · ")
+        : "First-pass beam selected";
+    }
+  }
   for (const segment of transcript.segments || []) {
     const row = document.createElement("div");
     row.className = "transcript-segment";
@@ -711,6 +780,9 @@ function resetTranscriptMonitor() {
   }
   ui.whisperLiveTranscript.textContent = "Waiting for the audio first pass.";
   ui.avecLiveTranscript.textContent = "Waiting for the routing decision.";
+  ui.decoderDetail.hidden = true;
+  ui.beamLiveTranscript.textContent = "Waiting for CTC hypotheses.";
+  ui.rerankSummary.textContent = "Waiting for reranking.";
 }
 
 function formatTimestamp(value) {
@@ -726,7 +798,11 @@ function handleEvent(event) {
     routeFeatures = { ...routeFeatures, ...event.features };
     renderTelemetry();
   }
-  const stage = event.stage === "features" ? "router" : event.stage;
+  const stage = event.stage === "features"
+    ? "router"
+    : (event.stage === "beam" || event.stage === "rescore")
+      ? "avec"
+      : event.stage;
   const node = document.querySelector(`.pipeline-node[data-stage="${stage}"]`);
   if (node) {
     node.classList.remove("running", "complete", "skipped");
@@ -799,9 +875,9 @@ function traceDetail(event) {
 function renderResult(result) {
   renderTranscriptResult("whisper", result.whisper_transcript);
   renderTranscriptResult("avec", result.avec_transcript);
-  const selectedTranscript = String(result.selected_system || "").toLowerCase();
-  ui.whisperTranscriptCard.classList.toggle("selected", selectedTranscript === "whisper");
-  ui.avecTranscriptCard.classList.toggle("selected", selectedTranscript === "avec");
+  const selectedStage = result.avec_transcript ? "avec" : "whisper";
+  ui.whisperTranscriptCard.classList.toggle("selected", selectedStage === "whisper");
+  ui.avecTranscriptCard.classList.toggle("selected", selectedStage === "avec");
   ui.transcriptSelection.textContent = result.selected_system + " selected";
   if (result.features) {
     routeFeatures = { ...routeFeatures, ...result.features };
@@ -817,7 +893,6 @@ function renderResult(result) {
   for (const node of document.querySelectorAll(".pipeline-node")) {
     node.classList.remove("selected");
   }
-  const selectedStage = result.avec_transcript ? "avec" : "whisper";
   document.querySelector(`.pipeline-node[data-stage="${selectedStage}"]`)?.classList.add("selected");
   ui.resultBand.dataset.system = selectedStage;
 }

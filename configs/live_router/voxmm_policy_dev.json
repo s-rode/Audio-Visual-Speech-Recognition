@@ -1,0 +1,55 @@
+{
+  "policy_type": "learned_logistic",
+  "feature_family": "combined",
+  "feature": null,
+  "direction": "higher",
+  "threshold": 0.22272280660644467,
+  "model_version": 1,
+  "feature_names": [
+    "audio_avg_logprob_mean",
+    "audio_no_speech_prob_max",
+    "audio_prediction_word_count",
+    "audio_prediction_words_per_second"
+  ],
+  "feature_medians": {
+    "audio_avg_logprob_mean": -0.3636144811616224,
+    "audio_no_speech_prob_max": 0.007875776384025812,
+    "audio_prediction_word_count": 8.0,
+    "audio_prediction_words_per_second": 3.171247429612763
+  },
+  "feature_means": {
+    "audio_avg_logprob_mean": -0.3934008818407887,
+    "audio_no_speech_prob_max": 0.01715451700356789,
+    "audio_prediction_word_count": 10.508,
+    "audio_prediction_words_per_second": 3.186782914389253
+  },
+  "feature_scales": {
+    "audio_avg_logprob_mean": 0.14385500619469205,
+    "audio_no_speech_prob_max": 0.02590128889204617,
+    "audio_prediction_word_count": 7.16784040000891,
+    "audio_prediction_words_per_second": 0.8894970203050593
+  },
+  "coefficients": {
+    "audio_avg_logprob_mean": -0.022349823693930387,
+    "audio_no_speech_prob_max": 0.004228540486841328,
+    "audio_prediction_word_count": 0.011950470734236975,
+    "audio_prediction_words_per_second": -0.008867168769640896
+  },
+  "intercept": -1.3493191805251739,
+  "l2_strength": 3.0,
+  "class_weight": "unweighted",
+  "training_utterances": 500,
+  "training_audio_visual_wins": 103,
+  "version": 1,
+  "audio_system": "whisper_base",
+  "av_system": "avec_av_beam_roberta",
+  "calibrated_on": "data/voxmm_dev_eval/manifest.local.csv",
+  "calibrated_utterances": 500,
+  "study": {
+    "configuration": "audio_compact_l2_3_0_unweighted",
+    "outer_folds": 5,
+    "inner_folds": 4,
+    "seed": 0,
+    "recommended_for_test": false
+  }
+}

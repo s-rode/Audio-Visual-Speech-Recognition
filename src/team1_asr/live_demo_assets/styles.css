@@ -639,6 +639,41 @@ input[type="range"] {
   line-height: 1.45;
 }
 
+.decoder-detail {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.decoder-detail[hidden] {
+  display: none;
+}
+
+.decoder-detail > div {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+
+.decoder-detail span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.decoder-detail p {
+  min-width: 0;
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .transcript-segments {
   max-height: 138px;
   overflow: auto;

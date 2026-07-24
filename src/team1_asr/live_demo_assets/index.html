@@ -126,7 +126,7 @@
         <div class="pipeline-node" data-stage="avec">
           <span class="node-index">03</span>
           <strong>AVEC</strong>
-          <small>Conditional fusion</small>
+          <small>Fusion + beam + RoBERTa</small>
         </div>
       </div>
 
@@ -165,6 +165,16 @@
               <span id="avec-transcript-status">Waiting</span>
             </header>
             <p id="avec-live-transcript" aria-live="polite">Waiting for the routing decision.</p>
+            <div class="decoder-detail" id="decoder-detail" hidden>
+              <div>
+                <span>3-gram beam</span>
+                <p id="beam-live-transcript">Waiting for CTC hypotheses.</p>
+              </div>
+              <div>
+                <span>RoBERTa selection</span>
+                <p id="rerank-summary">Waiting for reranking.</p>
+              </div>
+            </div>
             <div class="transcript-segments" id="avec-segments"></div>
           </article>
         </div>
