@@ -1,0 +1,15 @@
+torch
+torchvision<0.24  # >=0.24 removed torchvision.io.read_video/write_video/VideoReader (migrated to torchcodec); nnet/datasets.py and tools/build_lrs2_from_manifest.py still use the old API
+torchaudio
+torchtext
+matplotlib
+tensorboard
+jiwer>=3.0  # 2.4.0's wer(..., standardize=True) API is gone; nnet/metrics.py now uses the reference_transform/hypothesis_transform API from jiwer 3.x
+numpy
+tqdm
+sentencepiece
+scikit-image
+gdown
+av
+scipy  # HardArtificialNoise's bandwidth stage (nnet/transforms.py)
+pyroomacoustics  # HardArtificialNoise's reverb stage (nnet/transforms.py)

@@ -8,12 +8,7 @@ DEMAND/
 .DS_Store
 outputs/
 wandb/
-data/librispeech/
-data/lrs3/
-data/lrs_voxmm/
-data/voxmm/
-data/voxmm_dev_eval/
-data/voxmm_preprocessed/
+data/
 voxmm_dev_eval.tar.gz
 voxmm_preprocessed.tar.gz
 external/AVEC/

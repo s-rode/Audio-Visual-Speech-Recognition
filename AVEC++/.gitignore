@@ -1,0 +1,6 @@
+# Large pretrained checkpoints -- not versioned here, see
+# AVEC/CLAIX_SETUP.md / CHECKPOINTS.md for how to refetch them.
+wav2vec2/
+SwinLip/lrw_swinlip.pth
+
+.DS_Store
