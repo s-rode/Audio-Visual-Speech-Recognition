@@ -2552,8 +2552,9 @@ def _write_reports(
     result = _route(inputs, policy)
     _write_csv(output_dir / "routing_decisions.csv", result["decisions"])
     _write_csv(output_dir / "missed_av_wins.csv", result["missed_av_wins"])
-    _write_json(output_dir / "metrics.json", result["metrics"])
-    return result["metrics"]
+    metrics = _report_metrics_without_policy(result["metrics"])
+    _write_json(output_dir / "metrics.json", metrics)
+    return metrics
 
 
 def _route(
