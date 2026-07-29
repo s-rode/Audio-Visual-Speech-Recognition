@@ -7,20 +7,151 @@ import struct
 import tempfile
 import unittest
 import wave
+from unittest.mock import patch
 
 from team1_asr.reliability import (
+    _cumulative_routing_thresholds,
+    _score_policy,
+    _score_threshold_candidates,
+    _select_routing_threshold,
     _benefit_target,
     calibrate,
     diagnose_failures,
     evaluate,
+    finalize_train_dev_study,
     learn,
     noise_study,
+    select_train_dev_candidate,
     split_manifests,
     study,
+    train_dev_candidate,
+    train_dev_oof_fold,
 )
 
 
+def _routing_decision(
+    score: float | None,
+    audio_errors: int,
+    av_errors: int | None,
+    *,
+    roi_status: str = "success",
+) -> dict[str, object]:
+    return {
+        "reliability_score": "" if score is None else score,
+        "audio_word_errors": audio_errors,
+        "audio_visual_word_errors": "" if av_errors is None else av_errors,
+        "audio_visual_prediction": "avec" if av_errors is not None else "",
+        "roi_status": roi_status,
+        "fallback_used": "false",
+    }
+
+
+def _bruteforce_routing_threshold(decisions: list[dict[str, object]]) -> float:
+    scores = sorted({
+        float(row["reliability_score"])
+        for row in decisions
+        if row["reliability_score"] != ""
+        and row["audio_visual_word_errors"] != ""
+        and row["audio_visual_prediction"]
+        and row["roi_status"] == "success"
+    })
+    if not scores:
+        return float("inf")
+    candidates = [max(scores) + 1.0, *scores]
+    return min(
+        candidates,
+        key=lambda threshold: (
+            sum(
+                int(row["audio_visual_word_errors"])
+                if row["reliability_score"] != ""
+                and row["audio_visual_word_errors"] != ""
+                and row["audio_visual_prediction"]
+                and row["roi_status"] == "success"
+                and float(row["reliability_score"]) >= threshold
+                else int(row["audio_word_errors"])
+                for row in decisions
+            ),
+            sum(
+                row["reliability_score"] != ""
+                and row["audio_visual_word_errors"] != ""
+                and row["audio_visual_prediction"]
+                and row["roi_status"] == "success"
+                and float(row["reliability_score"]) >= threshold
+                for row in decisions
+            ),
+            -threshold,
+        ),
+    )
+
+
+def _precomputed_threshold_row(
+    score: float | None,
+    audio_errors: int,
+    av_errors: int | None,
+    *,
+    roi_status: str = "success",
+) -> dict[str, object]:
+    return {
+        "feature_row": {
+            "score": "" if score is None else score,
+            "roi_status": roi_status,
+            "fallback_used": "false",
+        },
+        "audio_errors": audio_errors,
+        "av_errors": av_errors,
+        "av_prediction": "avec" if av_errors is not None else None,
+        "reference_words": 1,
+    }
+
+
 class ReliabilityTest(unittest.TestCase):
+    def test_cumulative_routing_threshold_matches_bruteforce(self) -> None:
+        decisions = [
+            _routing_decision(0.9, 4, 1),
+            _routing_decision(0.9, 3, 3),
+            _routing_decision(0.4, 2, 0),
+            _routing_decision(0.2, 1, 0, roi_status="fallback"),
+            _routing_decision(None, 1, 0),
+            _routing_decision(0.1, 1, None),
+        ]
+        expected = _bruteforce_routing_threshold(decisions)
+        self.assertEqual(_select_routing_threshold(decisions), expected)
+        self.assertEqual(
+            _cumulative_routing_thresholds(decisions),
+            [
+                (12, 0, 1.9),
+                (9, 2, 0.9),
+                (7, 3, 0.4),
+            ],
+        )
+
+    def test_cumulative_routing_threshold_uses_existing_tiebreaks(self) -> None:
+        decisions = [_routing_decision(0.7, 2, 2), _routing_decision(0.3, 1, 1)]
+        self.assertEqual(_select_routing_threshold(decisions), 1.7)
+        self.assertEqual(_select_routing_threshold([_routing_decision(None, 1, 0)]), float("inf"))
+
+    def test_cumulative_generic_threshold_scores_match_bruteforce(self) -> None:
+        precomputed = [
+            _precomputed_threshold_row(0.8, 4, 1),
+            _precomputed_threshold_row(0.8, 2, 2),
+            _precomputed_threshold_row(0.2, 1, 0),
+            _precomputed_threshold_row(0.1, 1, 0, roi_status="fallback"),
+            _precomputed_threshold_row(None, 1, 0),
+            _precomputed_threshold_row(0.4, 1, None),
+        ]
+        policies = [
+            {"policy_type": "threshold", "feature": "score", "threshold": threshold,
+             "direction": direction, "priority": 1, "feature_family": "visual"}
+            for direction in ("higher", "lower")
+            for threshold in (0.2, 0.8)
+        ]
+        optimized = _score_threshold_candidates(policies, precomputed)
+        for policy in policies:
+            self.assertEqual(
+                optimized[id(policy)],
+                _score_policy({}, policy, precomputed=precomputed),
+            )
+
     def test_benefit_target_represents_expected_av_error_reduction(self) -> None:
         self.assertEqual(_benefit_target(5, 2), 3.0)
         self.assertEqual(_benefit_target(3, 3), 0.0)
@@ -517,6 +648,58 @@ class ReliabilityTest(unittest.TestCase):
                 {row["feature_set"] for row in rows},
                 {"audio_compact", "visual_compact", "combined_compact"},
             )
+
+    def test_checkpointed_train_dev_workflow_merges_grouped_folds(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            paths = _write_learned_fixture(root)
+            candidate_root = root / "candidates"
+            oof_root = root / "oof"
+            final_root = root / "final"
+            kwargs = {
+                "train_manifest_path": paths["manifest"],
+                "train_reliability_path": paths["reliability"],
+                "train_audio_transcripts_path": paths["audio"],
+                "train_av_transcripts_path": paths["av"],
+                "dev_manifest_path": paths["manifest"],
+                "dev_reliability_path": paths["reliability"],
+                "dev_audio_transcripts_path": paths["audio"],
+                "dev_av_transcripts_path": paths["av"],
+                "folds": 5,
+                "inner_folds": 2,
+                "seed": 3,
+                "configuration": "logistic_core",
+            }
+            with patch(
+                "team1_asr.reliability.CLEAN_ROUTER_CONFIGS",
+                (
+                    {
+                        "name": "logistic_core",
+                        "model": "logistic",
+                        "features": ["face_detection_rate"],
+                    },
+                ),
+            ):
+                train_dev_candidate(output_dir=candidate_root, **kwargs)
+                selection = select_train_dev_candidate(
+                    candidate_dir=candidate_root, output_dir=root / "selection"
+                )
+                self.assertEqual(selection["selected_configuration"], "logistic_core")
+                for fold_index in range(5):
+                    train_dev_oof_fold(
+                        output_dir=oof_root, fold_index=fold_index, **kwargs
+                    )
+                result = finalize_train_dev_study(
+                    candidate_dir=candidate_root,
+                    oof_dir=oof_root,
+                    output_dir=final_root,
+                    folds=5,
+                    inner_folds=2,
+                    seed=3,
+                )
+            self.assertEqual(result["selected_configuration"], "logistic_core")
+            self.assertTrue((final_root / "selected_policy.pkl").exists())
+            self.assertTrue((final_root / "router_train_dev_decisions.csv").exists())
 
     def test_noise_study_groups_conditions_by_source_video(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
