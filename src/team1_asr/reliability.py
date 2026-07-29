@@ -2395,7 +2395,7 @@ def evaluate(
     output_dir: Path,
     features_path: Path | None = None,
 ) -> dict[str, object]:
-    policy = _read_json(policy_path)
+    policy = _read_policy(policy_path)
     _validate_policy(policy)
     inputs = _load_evaluation_inputs(
         manifest_path,
@@ -2460,7 +2460,7 @@ def split_manifests(
     source_rows = _read_csv_by_id(source_manifest_path)
     roi_rows = _read_csv_by_id(roi_manifest_path)
     reliability = _read_csv_by_id(reliability_path)
-    policy = _read_json(policy_path)
+    policy = _read_policy(policy_path)
     _validate_policy(policy)
     audio = (
         _read_transcripts(audio_transcripts_path)
@@ -3425,6 +3425,18 @@ def _read_json(path: Path) -> dict[str, object]:
         raise ValueError(f"Expected a JSON object in {path}")
     return value
 
+
+
+
+def _read_policy(path: Path) -> dict[str, object]:
+    """Load a portable JSON policy summary or its fitted pickle artifact."""
+    if path.suffix != ".pkl":
+        return _read_json(path)
+    with path.open("rb") as handle:
+        value = pickle.load(handle)
+    if not isinstance(value, dict):
+        raise ValueError(f"Expected a policy dictionary in {path}")
+    return value
 
 def _write_json(path: Path, value: dict[str, object]) -> None:
     path.write_text(json.dumps(value, indent=2), encoding="utf-8")
