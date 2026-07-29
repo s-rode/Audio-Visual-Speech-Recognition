@@ -336,6 +336,7 @@ def _add_evaluation_inputs(
     )
     if require_policy:
         parser.add_argument("--policy", required=True)
+    parser.add_argument("--features")
     parser.add_argument("--output-dir", required=True)
 
 
@@ -462,6 +463,7 @@ def main() -> None:
             av_transcripts_path=Path(args.av_transcripts),
             policy_path=Path(args.policy),
             output_dir=Path(args.output_dir),
+            features_path=Path(args.features) if args.features else None,
         )
     else:
         diagnose_failures(
@@ -2391,6 +2393,7 @@ def evaluate(
     av_transcripts_path: Path,
     policy_path: Path,
     output_dir: Path,
+    features_path: Path | None = None,
 ) -> dict[str, object]:
     policy = _read_json(policy_path)
     _validate_policy(policy)
@@ -2400,6 +2403,7 @@ def evaluate(
         audio_transcripts_path,
         av_transcripts_path,
         _policy_audio_system(policy),
+        features_path=features_path,
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     return _write_reports(inputs, policy, output_dir)
