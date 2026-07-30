@@ -2529,11 +2529,12 @@ def _load_evaluation_inputs(
         )
     if features_path is not None:
         features = _read_noise_features(features_path)
-        for utterance_id in rows:
-            feature_row = features.get(f"clean::{utterance_id}")
+        for utterance_id, manifest_row in rows.items():
+            condition = str(manifest_row.get("condition") or "clean")
+            feature_row = features.get(f"{condition}::{utterance_id}")
             if feature_row is None:
                 raise ValueError(
-                    f"Extracted routing features are missing clean/{utterance_id}"
+                    f"Extracted routing features are missing {condition}/{utterance_id}"
                 )
             audio[utterance_id].update(feature_row)
     return {
