@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import json
+import math
+import pickle
 from pathlib import Path
 import struct
 import tempfile
@@ -10,7 +12,10 @@ import wave
 from unittest.mock import patch
 
 from team1_asr.reliability import (
+    _benefit_prediction,
     _cumulative_routing_thresholds,
+    _fit_benefit_policy,
+    _load_evaluation_inputs,
     _score_policy,
     _score_threshold_candidates,
     _select_routing_threshold,
@@ -156,6 +161,96 @@ class ReliabilityTest(unittest.TestCase):
         self.assertEqual(_benefit_target(5, 2), 3.0)
         self.assertEqual(_benefit_target(3, 3), 0.0)
         self.assertEqual(_benefit_target(1, 4), -3.0)
+
+    def test_neural_benefit_router_is_grouped_deterministic_and_serializable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paths = _write_learned_fixture(Path(temp_dir))
+            inputs = _load_evaluation_inputs(
+                paths["manifest"],
+                paths["reliability"],
+                paths["audio"],
+                paths["av"],
+                "audio",
+            )
+            features = ["audio_avg_logprob_mean", "face_detection_rate"]
+            first = _fit_benefit_policy(
+                inputs, feature_candidates=features, model="mlp", seed=7,
+                compute_feature_importances=True,
+            )
+            second = _fit_benefit_policy(
+                inputs, feature_candidates=features, model="mlp", seed=7,
+                compute_feature_importances=False,
+            )
+
+            self.assertEqual(first["hidden_layer_sizes"], [64, 32])
+            self.assertEqual(first["selected_epochs"], second["selected_epochs"])
+            self.assertTrue(first["feature_importances"])
+            fit_groups = set(first["early_stopping_fit_source_groups"])
+            validation_groups = set(first["early_stopping_validation_source_groups"])
+            self.assertFalse(fit_groups & validation_groups)
+            self.assertEqual(fit_groups | validation_groups, {f"video{i}" for i in range(5)})
+
+            missing_prediction = _benefit_prediction(first, {})
+            repeated_prediction = _benefit_prediction(second, {})
+            self.assertIsNotNone(missing_prediction)
+            self.assertIsNotNone(repeated_prediction)
+            self.assertTrue(math.isfinite(float(missing_prediction)))
+            self.assertAlmostEqual(float(missing_prediction), float(repeated_prediction), places=12)
+
+            normalized = [
+                (first["feature_medians"][feature] - first["feature_means"][feature])
+                / first["feature_scales"][feature]
+                for feature in first["feature_names"]
+            ]
+            expected = float(first["estimator"].predict([normalized])[0])
+            expected = expected * first["target_scale"] + first["target_mean"]
+            self.assertAlmostEqual(float(missing_prediction), expected, places=12)
+
+            restored = pickle.loads(pickle.dumps(first))
+            self.assertAlmostEqual(
+                float(_benefit_prediction(restored, {}) or 0.0),
+                float(missing_prediction),
+                places=12,
+            )
+            corrupt = dict(first)
+            corrupt.pop("target_scale")
+            self.assertIsNone(_benefit_prediction(corrupt, {}))
+
+    def test_neural_candidate_writes_complete_dev_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            paths = _write_learned_fixture(root)
+            candidate_root = root / "candidates"
+            config = {
+                "name": "benefit_mlp_enriched",
+                "model": "mlp",
+                "features": ["audio_avg_logprob_mean", "face_detection_rate"],
+            }
+            with patch("team1_asr.reliability.CLEAN_ROUTER_CONFIGS", (config,)):
+                result = train_dev_candidate(
+                    train_manifest_path=paths["manifest"],
+                    train_reliability_path=paths["reliability"],
+                    train_audio_transcripts_path=paths["audio"],
+                    train_av_transcripts_path=paths["av"],
+                    dev_manifest_path=paths["manifest"],
+                    dev_reliability_path=paths["reliability"],
+                    dev_audio_transcripts_path=paths["audio"],
+                    dev_av_transcripts_path=paths["av"],
+                    output_dir=candidate_root,
+                    configuration="benefit_mlp_enriched",
+                    folds=5,
+                    inner_folds=2,
+                    seed=11,
+                )
+            output = candidate_root / "benefit_mlp_enriched"
+            self.assertEqual(result["dev"]["utterances_scored"], 10)
+            self.assertEqual(result["policy"]["benefit_model"], "mlp")
+            self.assertTrue((output / "policy.pkl").exists())
+            self.assertTrue((output / "candidate.json").exists())
+            with (output / "dev_decisions.csv").open() as handle:
+                decisions = list(csv.DictReader(handle))
+            self.assertEqual(len(decisions), 10)
+            self.assertNotIn("audio_visual_prediction", result["features"])
 
     def test_calibrates_detection_threshold_and_writes_reports(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

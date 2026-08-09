@@ -18,6 +18,7 @@ import soundfile as sf
 import pickle
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.linear_model import Ridge
+from sklearn.neural_network import MLPRegressor
 
 from team1_asr.evaluation import compute_metrics
 from team1_asr.router_features import extract_features as extract_router_features
@@ -168,7 +169,19 @@ CLEAN_ROUTER_CONFIGS = (
         "model": "hist_gradient_boosting",
         "features": ENRICHED_MULTIMODAL_FEATURES,
     },
+    {
+        "name": "benefit_mlp_enriched",
+        "model": "mlp",
+        "features": ENRICHED_MULTIMODAL_FEATURES,
+    },
 )
+MLP_HIDDEN_LAYER_SIZES = (64, 32)
+MLP_ALPHA = 1e-3
+MLP_BATCH_SIZE = 256
+MLP_LEARNING_RATE = 1e-3
+MLP_MAX_EPOCHS = 150
+MLP_PATIENCE = 12
+MLP_IMPROVEMENT_TOLERANCE = 1e-4
 NOISE_STUDY_BOOTSTRAP_SAMPLES = 1000
 STUDY_L2_STRENGTHS = (0.3, 1.0, 3.0)
 STUDY_CLASS_WEIGHTS = ("unweighted",)
@@ -1142,7 +1155,9 @@ def train_dev_candidate(
         seed=seed + config_index * 1000,
         audio_system_name=audio_system_name,
         av_system_name=av_system_name,
-        compute_feature_importances=str(config["model"]) == "hist_gradient_boosting",
+        compute_feature_importances=str(config["model"]) in {
+            "hist_gradient_boosting", "mlp"
+        },
     )
     print(f"[router] candidate {configuration}: evaluating dev", flush=True)
     dev_result = _route(dev_inputs, policy)
@@ -2112,7 +2127,7 @@ def _fit_benefit_policy(
     seed: int,
     compute_feature_importances: bool = True,
 ) -> dict[str, object]:
-    if model not in {"ridge", "hist_gradient_boosting"}:
+    if model not in {"ridge", "hist_gradient_boosting", "mlp"}:
         raise ValueError(f"Unsupported benefit router model: {model}")
     eligible = []
     for utterance_id, manifest_row in inputs["rows"].items():
@@ -2126,6 +2141,7 @@ def _fit_benefit_policy(
         av_errors, _ = _word_error_stats(reference, str(av_prediction))
         eligible.append(
             (
+                utterance_id,
                 _feature_row(reliability_row, inputs["audio"][utterance_id]),
                 _benefit_target(audio_errors, av_errors),
             )
@@ -2136,7 +2152,10 @@ def _fit_benefit_policy(
     feature_names = [
         feature
         for feature in feature_candidates
-        if any(optional_float(feature_row.get(feature)) is not None for feature_row, _ in eligible)
+        if any(
+            optional_float(feature_row.get(feature)) is not None
+            for _, feature_row, _ in eligible
+        )
     ]
     if not feature_names:
         raise ValueError("No numeric benefit-routing features are available.")
@@ -2144,7 +2163,7 @@ def _fit_benefit_policy(
         feature: float(
             statistics.median(
                 optional_float(feature_row.get(feature))
-                for feature_row, _ in eligible
+                for _, feature_row, _ in eligible
                 if optional_float(feature_row.get(feature)) is not None
             )
         )
@@ -2158,11 +2177,11 @@ def _fit_benefit_policy(
                 else medians[feature]
                 for feature in feature_names
             ]
-            for feature_row, _ in eligible
+            for _, feature_row, _ in eligible
         ],
         dtype=float,
     )
-    targets = np.array([target for _, target in eligible], dtype=float)
+    targets = np.array([target for _, _, target in eligible], dtype=float)
     policy: dict[str, object] = {
         "policy_type": BENEFIT_POLICY_TYPE,
         "feature_family": "combined",
@@ -2175,12 +2194,26 @@ def _fit_benefit_policy(
         "feature_medians": medians,
         "training_utterances": len(eligible),
     }
-    if model == "ridge":
+    if model in {"ridge", "mlp"}:
         means = raw.mean(axis=0)
         scales = raw.std(axis=0)
         scales[scales < 1e-12] = 1.0
-        estimator = Ridge(alpha=1.0)
-        estimator.fit((raw - means) / scales, targets)
+        normalized = (raw - means) / scales
+        if model == "ridge":
+            estimator = Ridge(alpha=1.0)
+            estimator.fit(normalized, targets)
+        else:
+            target_mean = float(targets.mean())
+            target_scale = float(targets.std())
+            if target_scale < 1e-12:
+                target_scale = 1.0
+            normalized_targets = (targets - target_mean) / target_scale
+            estimator, mlp_metadata = _fit_grouped_mlp(
+                normalized,
+                normalized_targets,
+                [utterance_id for utterance_id, _, _ in eligible],
+                seed=seed,
+            )
         policy.update(
             {
                 "estimator": estimator,
@@ -2190,12 +2223,25 @@ def _fit_benefit_policy(
                 "feature_scales": {
                     feature: float(value) for feature, value in zip(feature_names, scales)
                 },
-                "coefficients": {
-                    feature: float(value)
-                    for feature, value in zip(feature_names, estimator.coef_)
-                },
             }
         )
+        if model == "ridge":
+            policy["coefficients"] = {
+                feature: float(value)
+                for feature, value in zip(feature_names, estimator.coef_)
+            }
+        else:
+            policy.update(
+                {
+                    "target_mean": target_mean,
+                    "target_scale": target_scale,
+                    **mlp_metadata,
+                }
+            )
+            if compute_feature_importances:
+                policy["feature_importances"] = _permutation_importances(
+                    estimator, normalized, normalized_targets, feature_names, seed
+                )
     else:
         estimator = HistGradientBoostingRegressor(
             learning_rate=0.05,
@@ -2218,8 +2264,94 @@ def _fit_benefit_policy(
     return policy
 
 
+def _new_mlp_regressor(seed: int) -> MLPRegressor:
+    return MLPRegressor(
+        hidden_layer_sizes=MLP_HIDDEN_LAYER_SIZES,
+        activation="relu",
+        solver="adam",
+        alpha=MLP_ALPHA,
+        batch_size=MLP_BATCH_SIZE,
+        learning_rate_init=MLP_LEARNING_RATE,
+        max_iter=1,
+        shuffle=True,
+        random_state=seed,
+    )
+
+
+def _fit_grouped_mlp(
+    features: np.ndarray,
+    targets: np.ndarray,
+    utterance_ids: list[str],
+    *,
+    seed: int,
+) -> tuple[MLPRegressor, dict[str, object]]:
+    source_groups = sorted({_source_video_id(item) for item in utterance_ids})
+    if len(source_groups) < 2:
+        selected_epochs = MLP_MAX_EPOCHS
+        fit_groups = source_groups
+        validation_groups: list[str] = []
+    else:
+        fold_count = min(5, len(source_groups))
+        validation_ids = set(
+            _grouped_folds(utterance_ids, folds=fold_count, seed=seed)[0]
+        )
+        validation_mask = np.array(
+            [item in validation_ids for item in utterance_ids], dtype=bool
+        )
+        fit_mask = ~validation_mask
+        fit_groups = sorted(
+            {_source_video_id(item) for item, keep in zip(utterance_ids, fit_mask) if keep}
+        )
+        validation_groups = sorted(
+            {
+                _source_video_id(item)
+                for item, keep in zip(utterance_ids, validation_mask)
+                if keep
+            }
+        )
+        selector = _new_mlp_regressor(seed)
+        best_error = float("inf")
+        selected_epochs = 1
+        epochs_without_improvement = 0
+        for epoch in range(1, MLP_MAX_EPOCHS + 1):
+            selector.partial_fit(features[fit_mask], targets[fit_mask])
+            predictions = selector.predict(features[validation_mask])
+            error = float(np.mean((predictions - targets[validation_mask]) ** 2))
+            if error < best_error - MLP_IMPROVEMENT_TOLERANCE:
+                best_error = error
+                selected_epochs = epoch
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
+            if epochs_without_improvement >= MLP_PATIENCE:
+                break
+
+    estimator = _new_mlp_regressor(seed)
+    for _ in range(selected_epochs):
+        estimator.partial_fit(features, targets)
+    print(
+        f"[router] neural benefit model selected {selected_epochs} epoch(s)",
+        flush=True,
+    )
+    return estimator, {
+        "hidden_layer_sizes": list(MLP_HIDDEN_LAYER_SIZES),
+        "activation": "relu",
+        "solver": "adam",
+        "alpha": MLP_ALPHA,
+        "batch_size": MLP_BATCH_SIZE,
+        "learning_rate_init": MLP_LEARNING_RATE,
+        "max_epochs": MLP_MAX_EPOCHS,
+        "patience": MLP_PATIENCE,
+        "selected_epochs": selected_epochs,
+        "random_seed": seed,
+        "training_source_groups": len(source_groups),
+        "early_stopping_fit_source_groups": fit_groups,
+        "early_stopping_validation_source_groups": validation_groups,
+    }
+
+
 def _permutation_importances(
-    estimator: HistGradientBoostingRegressor,
+    estimator: object,
     features: np.ndarray,
     targets: np.ndarray,
     feature_names: list[str],
@@ -2908,7 +3040,7 @@ def _benefit_prediction(
         not isinstance(feature_names, list)
         or not isinstance(medians, dict)
         or estimator is None
-        or model not in {"ridge", "hist_gradient_boosting"}
+        or model not in {"ridge", "hist_gradient_boosting", "mlp"}
     ):
         return None
     values = []
@@ -2921,7 +3053,7 @@ def _benefit_prediction(
         value = optional_float(feature_row.get(feature))
         values.append(median if value is None else value)
     features = np.array([values], dtype=float)
-    if model == "ridge":
+    if model in {"ridge", "mlp"}:
         means = policy.get("feature_means")
         scales = policy.get("feature_scales")
         if not isinstance(means, dict) or not isinstance(scales, dict):
@@ -2935,7 +3067,14 @@ def _benefit_prediction(
             normalized.append((features[0, index] - mean) / scale)
         features = np.array([normalized], dtype=float)
     try:
-        return float(estimator.predict(features)[0])
+        prediction = float(estimator.predict(features)[0])
+        if model == "mlp":
+            target_mean = optional_float(policy.get("target_mean"))
+            target_scale = optional_float(policy.get("target_scale"))
+            if target_mean is None or target_scale is None or target_scale <= 0:
+                return None
+            prediction = prediction * target_scale + target_mean
+        return prediction
     except (AttributeError, TypeError, ValueError):
         return None
 
