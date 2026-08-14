@@ -96,20 +96,29 @@ def preprocess_manifest(
         row["utterance_id"]: row for row in existing_reliability
     }
     fieldnames = _fieldnames(rows, [id_column, audio_column, video_column, reference_column, language_column, "video_preprocessing"])
+    # Use append mode when skip_existing to support parallel sharded runs
+    csv_mode = "a" if skip_existing else "w"
+    manifest_is_new = not output_manifest.exists() or not skip_existing
+    reliability_is_new = not reliability_path.exists() or not skip_existing
     with output_manifest.open(
-        "w", encoding="utf-8", newline=""
+        csv_mode, encoding="utf-8", newline=""
     ) as handle, reliability_path.open(
-        "w", encoding="utf-8", newline=""
+        csv_mode, encoding="utf-8", newline=""
     ) as reliability_handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         reliability_writer = csv.DictWriter(
             reliability_handle,
             fieldnames=RELIABILITY_FIELDNAMES,
         )
-        writer.writeheader()
-        reliability_writer.writeheader()
+        if manifest_is_new:
+            writer.writeheader()
+        if reliability_is_new:
+            reliability_writer.writeheader()
+        total = len(rows)
         for index, row in enumerate(rows):
             utterance_id = row.get(id_column) or f"utt-{index:05d}"
+            if index % 10 == 0:
+                print(f"[{index}/{total}] {utterance_id}", flush=True)
             roi_video = roi_dir / f"{utterance_id}_mouth.mp4"
             reliability_row = existing_reliability_by_id.get(utterance_id)
             try:
@@ -198,7 +207,7 @@ def _preprocess_video(
     torchvision,
 ) -> dict[str, object]:
     video, fps = _read_video(source_video, torch)
-    landmarks, observations = _detect_landmarks(video, cropper)
+    landmarks, observations = _detect_landmarks_batched(video, cropper, batch_size=32)
     try:
         landmarks = cropper.landmarks_interpolate(landmarks)
         fallback_used = not landmarks
@@ -225,6 +234,78 @@ def _preprocess_video(
         detector_threshold=_detector_threshold(cropper),
     )
 
+
+
+
+def _detect_landmarks_batched(video, cropper, batch_size: int = 32):
+    """Batched RetinaFace detection across all frames of a video."""
+    import torch as _torch
+    import numpy as _np
+    from ibug.face_detection.retina_face.box_utils import decode, decode_landm
+    from ibug.face_detection.retina_face.py_cpu_nms import py_cpu_nms
+    from ibug.face_detection.retina_face.prior_box import PriorBox
+
+    detector = cropper.face_detector
+    frames_np = video.numpy()
+    T, H, W, _ = frames_np.shape
+    all_face_boxes: list = []
+
+    frames_bgr = frames_np[..., ::-1].astype(_np.float32) - _np.array([104, 117, 123], dtype=_np.float32)
+    frames_tensor = _torch.from_numpy(frames_bgr.transpose(0, 3, 1, 2).copy()).float().to(detector.device)
+
+    scale = _torch.Tensor([W, H, W, H]).to(detector.device)
+    scale1 = _torch.Tensor([W, H, W, H, W, H, W, H, W, H]).to(detector.device)
+    image_size = (H, W)
+
+    if detector.priors is None or detector.previous_size != image_size:
+        detector.priors = PriorBox(detector.config.__dict__, image_size=image_size).forward().to(detector.device)
+        detector.previous_size = image_size
+    prior_data = detector.priors.data
+
+    with _torch.no_grad():
+        for start in range(0, T, batch_size):
+            batch = frames_tensor[start:start + batch_size]
+            loc, conf, landms = detector.net(batch)
+            B = batch.shape[0]
+            for i in range(B):
+                boxes = decode(loc[i], prior_data, detector.config.variance) * scale
+                scores = conf[i].cpu().numpy()[:, 1]
+                lms = decode_landm(landms[i], prior_data, detector.config.variance) * scale1
+                boxes = boxes.cpu().numpy()
+                lms = lms.cpu().numpy()
+                inds = _np.where(scores > detector.config.conf_thresh)[0]
+                if len(inds) == 0:
+                    all_face_boxes.append(_np.empty((0, 15), dtype=_np.float32))
+                    continue
+                boxes, lms, scores = boxes[inds], lms[inds], scores[inds]
+                dets = _np.hstack((boxes, scores[:, _np.newaxis])).astype(_np.float32)
+                keep = py_cpu_nms(dets, detector.config.nms_thresh, detector.config.nms_top_k)
+                dets = dets[keep][:detector.config.top_k]
+                lms = lms[keep][:detector.config.top_k]
+                dets = _np.concatenate((dets, lms), axis=1)
+                inds = _np.where(dets[:, 4] >= detector.threshold)[0]
+                all_face_boxes.append(dets[inds] if len(inds) > 0 else _np.empty((0, 15), dtype=_np.float32))
+
+    observations: list[FrameReliability] = []
+    landmarks = []
+    for frame_np, detected_faces in zip(frames_np, all_face_boxes):
+        face_count = len(detected_faces)
+        face_confidence = float(detected_faces[0][4]) if face_count else None
+        detected_landmarks, scores = cropper.landmark_detector(frame_np, detected_faces, rgb=True)
+        if len(detected_landmarks) > 0:
+            landmarks.append(detected_landmarks[0])
+            mouth_scores = scores[0][cropper.start_idx:cropper.stop_idx]
+            mouth_confidence = float(mouth_scores.mean()) if len(mouth_scores) else None
+        else:
+            landmarks.append(None)
+            mouth_confidence = None
+        observations.append(FrameReliability(
+            face_count=face_count,
+            face_confidence=face_confidence,
+            mouth_landmark_confidence=mouth_confidence,
+        ))
+
+    return landmarks, observations
 
 def _detect_landmarks(video, cropper):
     observations: list[FrameReliability] = []
