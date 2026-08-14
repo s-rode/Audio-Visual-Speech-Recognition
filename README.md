@@ -240,71 +240,45 @@ external/AVEC/callbacks/VoxMM/AO/EffConfInterCTC_finetune/checkpoints_epoch_6_st
 ## Reliability routing
 
 The router is a sequential setup. Whisper base.en always transcribes the audio
-first. Based on transcript statistics, noisy-audio features, mouth ROI quality
-and motion, audio-video synchronization, and preprocessing reliability values,
-it decides whether AVEC-AV should also run. It does not use AVEC predictions or
-AVEC confidence for this decision.
+first. It then decides whether AVEC-AV is likely to reduce word errors for the
+utterance. AVEC predictions, AVEC confidence, transcript disagreement, and the
+reference are not available to the decision.
 
-The current development experiment is a balanced 600-clip VoxMM subset across
-source videos. It uses clean audio and three DEMAND conditions: 10 dB, 0 dB,
-and -5 dB.
+The full VoxMM study uses source-video-disjoint train, development, and test
+splits. Every utterance from one source video stays in the same split. Candidate
+models are selected on development data, while the test split stays frozen for
+the final evaluation.
 
-~~~bash
-uv run team1-asr configs/lrs_voxmm_whisper_base_600_enriched.toml
-uv run --extra noise team1-asr configs/lrs_voxmm_whisper_base_600_enriched_demand_10db.toml
-uv run --extra noise team1-asr configs/lrs_voxmm_whisper_base_600_enriched_demand_0db.toml
-uv run --extra noise team1-asr configs/lrs_voxmm_whisper_base_600_enriched_demand_-5db.toml
-~~~
-
-The resulting Whisper transcripts, noisy waveforms, and existing mouth ROI
-clips are turned into router features with:
+Router features are extracted from the waveform, aligned mouth ROI, visual
+preprocessing metadata, and Whisper output. They cover Whisper uncertainty,
+audio quality, visual reliability, mouth motion and image quality, and
+audio-video synchronization. The enriched feature set has 33 inputs, all
+available before AVEC runs.
 
 ~~~bash
-uv run team1-reliability extract-features \
-  --roi-manifest data/lrs_voxmm/dev_avec_roi_600_balanced/manifest.csv \
-  --reliability data/lrs_voxmm/dev_avec_roi_600_balanced/visual_reliability.csv \
-  --condition clean outputs/lrs_voxmm_noise_600_enriched/whisper_clean/transcripts.jsonl \
-  --condition demand_10db outputs/lrs_voxmm_noise_600_enriched/whisper_demand_10db/transcripts.jsonl \
-  --condition demand_0db outputs/lrs_voxmm_noise_600_enriched/whisper_demand_0db/transcripts.jsonl \
-  --condition demand_-5db outputs/lrs_voxmm_noise_600_enriched/whisper_demand_-5db/transcripts.jsonl \
-  --output-dir outputs/lrs_voxmm_noise_600_enriched/features
+uv run team1-reliability extract-features --help
+uv run team1-reliability train-dev-study --help
 ~~~
 
-routing_features.csv contains one row per condition and utterance. The summary
-CSV and JSON files describe missingness and the p10, median, and p90 of each
-feature for every condition.
+`extract-features` writes one feature row per utterance. The train/dev study
+fits router candidates on training videos, calibrates each routing threshold
+from grouped out-of-fold training predictions, and evaluates the fitted policy
+once on development videos. Its output includes decisions, WER/CER summaries,
+oracle WER, route rates, grouped-bootstrap comparisons, and policy metadata.
 
-The noise study compares the existing logistic baseline with enriched logistic
-and benefit-aware tree routers. It uses grouped nested cross-validation, so all
-conditions from a source video remain in the same fold. Nominal SNR is only a
-reporting condition, not a router input.
+The staged commands `train-dev-candidate`, `train-dev-oof-fold`,
+`select-train-dev-candidate`, and `finalize-train-dev-study` support the same
+workflow in separate cluster jobs.
 
-~~~bash
-uv run team1-reliability noise-study \
-  --manifest data/lrs_voxmm/manifest_dev_600_balanced.csv \
-  --reliability data/lrs_voxmm/dev_avec_roi_600_balanced/visual_reliability.csv \
-  --features outputs/lrs_voxmm_noise_600_enriched/features/routing_features.csv \
-  --condition clean \
-    outputs/lrs_voxmm_noise_600_enriched/whisper_clean/transcripts.jsonl \
-    outputs/lrs_voxmm_noise_600/avec_av_clean/transcripts.jsonl \
-  --condition demand_10db \
-    outputs/lrs_voxmm_noise_600_enriched/whisper_demand_10db/transcripts.jsonl \
-    outputs/lrs_voxmm_noise_600/avec_av_demand_10db/transcripts.jsonl \
-  --condition demand_0db \
-    outputs/lrs_voxmm_noise_600_enriched/whisper_demand_0db/transcripts.jsonl \
-    outputs/lrs_voxmm_noise_600/avec_av_demand_0db/transcripts.jsonl \
-  --condition demand_-5db \
-    outputs/lrs_voxmm_noise_600_enriched/whisper_demand_-5db/transcripts.jsonl \
-    outputs/lrs_voxmm_noise_600/avec_av_demand_-5db/transcripts.jsonl \
-  --output-dir outputs/lrs_voxmm_noise_600_enriched/noise_router_study
-~~~
+The candidates include logistic baselines, benefit-aware ridge regression,
+HistGradientBoosting regression, and a small MLP regression ablation. All
+benefit models predict Whisper word errors minus AVEC word errors, so positive
+values mean that AVEC is expected to help. The current full study selected the
+enriched HistGradientBoosting router; the MLP was kept as a controlled
+comparison and did not replace it.
 
-The study writes out-of-fold WER values, routing decisions, oracle WER, the
-remaining router-to-oracle gap, bootstrap comparisons, and fitted coefficients
-or feature importances. The presentation figure can be generated with:
-
-~~~bash
-uv run python scripts/plot_voxmm_noise_router_study.py \
-  --study outputs/lrs_voxmm_noise_600_enriched/noise_router_study/noise_router_study.json \
-  --output-dir outputs/lrs_voxmm_noise_600_enriched/figures
-~~~
+After development selection, `split` applies the frozen policy to new
+utterances and writes separate Whisper and AVEC manifests. `evaluate` combines
+the resulting transcripts into one routed result. The same policy can then be
+reported under controlled DEMAND noise conditions. Nominal SNR is a reporting
+condition only and is never included as a router feature.
