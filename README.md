@@ -2,6 +2,8 @@
 
 A university team project at RWTH Aachen exploring how speech recognition systems can learn **when to rely on audio and when to bring in visual speech information**. We developed a multimodal routing pipeline that combines Whisper with a fine-tuned audio-visual AVEC model, making an individual routing decision for each utterance.
 
+![Audio-visual speech recognition pipeline showing preprocessing, benefit-aware routing, AVEC and decoding](docs/images/avsr-pipeline.png)
+
 The central component is a **learned benefit-aware router**. Whisper first produces an audio transcription. The router then estimates whether invoking AVEC is likely to reduce the number of word errors. Its decision uses **33 features** covering transcription uncertainty, acoustic characteristics, mouth movement, image quality, face-tracking reliability, and audio-video synchronization—all available before AVEC inference.
 
 This requires handling uncertainty in both modalities: degraded audio can make lip movements valuable, while unreliable face tracking, poor image quality, or synchronization errors can limit their usefulness. We investigated logistic, ridge-regression, gradient-boosted, and neural routing models; the full development study selected an enriched gradient-boosted benefit predictor.

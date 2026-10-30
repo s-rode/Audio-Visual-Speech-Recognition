@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2160 650" width="2160" height="650" role="img" aria-labelledby="title desc">
+  <title id="title">Adaptive audio-visual speech recognition pipeline</title>
+  <desc id="desc">Audio and video are processed by Whisper and face and landmark detection. A benefit-aware router uses pre-AVEC features to keep the Whisper transcript or run AVEC, followed by optional decoding and reranking.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#087e77"/></marker>
+    <marker id="arrow-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8b9ba8"/></marker>
+    <style>
+      .box { fill:#fff; stroke:#cfdae4; stroke-width:2; }
+      .highlight { fill:#e6f3f1; stroke:#087e77; stroke-width:2; }
+      .soft { fill:#f5f8f8; stroke:#cfdae4; stroke-width:2; }
+      .line { fill:none; stroke:#087e77; stroke-width:3; stroke-linecap:round; stroke-linejoin:round; marker-end:url(#arrow); }
+      .direct { fill:none; stroke:#8b9ba8; stroke-width:2.5; stroke-dasharray:8 7; stroke-linecap:round; stroke-linejoin:round; marker-end:url(#arrow-muted); }
+      text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; text-anchor:middle; }
+      .heading { fill:#192638; font-size:23px; font-weight:700; }
+      .detail { fill:#5d6d80; font-size:17px; }
+      .section { fill:#087e77; font-size:13px; font-weight:700; letter-spacing:1.5px; }
+      .branch { fill:#087e77; font-size:16px; font-weight:600; }
+      .note { fill:#6a7a89; font-size:15px; }
+    </style>
+  </defs>
+  <rect width="2160" height="650" fill="#ffffff"/>
+
+  <text class="section" x="133" y="58">INPUT</text>
+  <text class="section" x="425" y="58">PREPROCESSING</text>
+  <text class="section" x="930" y="58">SELECTIVE ROUTING</text>
+  <text class="section" x="1730" y="58">TRANSCRIPTION</text>
+
+  <path class="line" d="M220 315 H255 V175 H300"/>
+  <path class="line" d="M220 315 H255 V450 H300"/>
+  <path class="line" d="M550 175 H580 V285 H610"/>
+  <path class="line" d="M550 450 H580 V345 H610"/>
+  <path class="direct" d="M130 370 V555 H595 V375 H610"/>
+  <path class="line" d="M930 315 H1000"/>
+  <path class="line" d="M1260 315 H1295 V155 H1330"/>
+  <path class="line" d="M1260 315 H1295 V420 H1330"/>
+  <path class="line" d="M1550 420 H1620"/>
+  <path class="line" d="M1840 420 H1900"/>
+  <path class="line" d="M1550 155 H2010 V350"/>
+
+  <text class="branch" x="266" y="160">audio</text>
+  <text class="branch" x="266" y="473">video</text>
+  <text class="note" x="345" y="545">waveform</text>
+  <text class="branch" x="1314" y="130">no</text>
+  <text class="branch" x="1314" y="395">yes</text>
+
+  <rect class="box" x="40" y="260" width="180" height="110" rx="18"/>
+  <text class="heading" x="130" y="303">Input</text><text class="detail" x="130" y="337">audio + video</text>
+
+  <rect class="box" x="300" y="120" width="250" height="110" rx="18"/>
+  <text class="heading" x="425" y="162">Whisper</text><text class="detail" x="425" y="196">transcript + uncertainty</text>
+
+  <rect class="box" x="300" y="390" width="250" height="120" rx="18"/>
+  <text class="heading" x="425" y="430">Visual preprocessing</text><text class="detail" x="425" y="463">face + landmark detection</text><text class="detail" x="425" y="487">aligned 88 × 88 mouth ROI</text>
+
+  <rect class="soft" x="610" y="240" width="320" height="150" rx="18"/>
+  <text class="heading" x="770" y="281">Routing features</text><text class="detail" x="770" y="313">audio quality · Whisper uncertainty</text><text class="detail" x="770" y="337">mouth reliability · motion · image quality</text><text class="detail" x="770" y="361">audio-video synchronization</text>
+
+  <rect class="highlight" x="1000" y="240" width="260" height="150" rx="18"/>
+  <text class="heading" x="1130" y="281">Benefit-aware router</text><text class="detail" x="1130" y="313">33 pre-AVEC features</text><text class="detail" x="1130" y="337">gradient-boosted predictor</text><text class="detail" x="1130" y="361">expected word errors saved</text>
+
+  <rect class="box" x="1330" y="95" width="220" height="120" rx="18"/>
+  <text class="heading" x="1440" y="137">Keep Whisper</text><text class="detail" x="1440" y="169">benefit ≤ threshold</text><text class="detail" x="1440" y="193">or invalid mouth ROI</text>
+
+  <rect class="highlight" x="1330" y="350" width="220" height="135" rx="18"/>
+  <text class="heading" x="1440" y="389">Run AVEC</text><text class="detail" x="1440" y="421">benefit &gt; threshold</text><text class="detail" x="1440" y="445">audio + mouth ROI</text><text class="detail" x="1440" y="469">fine-tuned AV model</text>
+
+  <rect class="box" x="1620" y="350" width="220" height="135" rx="18"/>
+  <text class="heading" x="1730" y="389">CTC decoding</text><text class="detail" x="1730" y="421">greedy or beam + 3-gram</text><text class="detail" x="1730" y="445">optional RoBERTa rerank</text>
+
+  <rect class="box" x="1900" y="350" width="220" height="135" rx="18"/>
+  <text class="heading" x="2010" y="405">Selected transcript</text><text class="detail" x="2010" y="445">one per utterance</text>
+</svg>
