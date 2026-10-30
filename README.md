@@ -1,9 +1,19 @@
-# Team 1 ASR Pipeline
+# Adaptive Audio-Visual Speech Recognition
 
-This repository contains the speech recognition experiments for the lab. It
-supports Whisper, Parakeet CoreML, and AVEC audio-only, visual-only, and
-audio-visual recognition. All backends use CSV manifests and write transcripts,
-WER, and CER in the same format.
+A university team project at RWTH Aachen exploring how speech recognition systems can learn **when to rely on audio and when to bring in visual speech information**. We developed a multimodal routing pipeline that combines Whisper with a fine-tuned audio-visual AVEC model, making an individual routing decision for each utterance.
+
+The central component is a **learned benefit-aware router**. Whisper first produces an audio transcription. The router then estimates whether invoking AVEC is likely to reduce the number of word errors. Its decision uses **33 features** covering transcription uncertainty, acoustic characteristics, mouth movement, image quality, face-tracking reliability, and audio-video synchronization—all available before AVEC inference.
+
+This requires handling uncertainty in both modalities: degraded audio can make lip movements valuable, while unreliable face tracking, poor image quality, or synchronization errors can limit their usefulness. We investigated logistic, ridge-regression, gradient-boosted, and neural routing models; the full development study selected an enriched gradient-boosted benefit predictor.
+
+The project covers the complete experimental pipeline:
+
+- **Multimodal data preparation:** face detection, landmark alignment, synchronized mouth crops, and visual reliability measurements.
+- **Model adaptation and decoding:** AVEC fine-tuning, CTC beam search with an in-domain language model, and RoBERTa hypothesis rescoring. On a 500-clip development set, decoding improvements reduced word error rate from **16.12% to 11.59%**.
+- **Routing evaluation:** source-video-disjoint training, development, and test splits; routing thresholds calibrated from grouped out-of-fold predictions; and grouped-bootstrap comparisons against audio-only and oracle selection.
+- **Noise robustness:** controlled DEMAND noise experiments measuring transcription accuracy, routing behaviour, and opportunities for visual information to help.
+
+Additional branches explore SwinLip/wav2vec2 encoder integration and an interactive browser demo of the routing pipeline.
 
 ## Setup
 
